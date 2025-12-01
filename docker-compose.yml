@@ -1,16 +1,22 @@
+version: '3.8'
+
 services:
   system-monitor:
     build: .
-    # ... (other lines) ...
+    container_name: system-monitor-dashboard
     volumes:
-      - /run/desktop/mnt/host/c:/host_c:ro
-      - ./reports:/data
-    
-    # ADD/UNCOMMENT THIS BLOCK TO FIX THE GPU ERROR:
+      # Mount the shared metrics directory
+      - ./metrics:/data:rw
+    # Keep container running
+    stdin_open: true
+    tty: true
+    # GPU passthrough (optional, for NVIDIA)
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              count: all
               capabilities: [gpu]
+    # Restart policy
+    restart: unless-stopped
