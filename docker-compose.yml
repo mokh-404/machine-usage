@@ -1,0 +1,16 @@
+services:
+  system-monitor:
+    build: .
+    # ... (other lines) ...
+    volumes:
+      - /run/desktop/mnt/host/c:/host_c:ro
+      - ./reports:/data
+    
+    # ADD/UNCOMMENT THIS BLOCK TO FIX THE GPU ERROR:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
