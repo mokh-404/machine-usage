@@ -14,6 +14,7 @@ This solution uses a **Host-Agent Pattern**:
 
 - ✅ **Real Physical Metrics**: Reports actual CPU, RAM, and Disk usage of the host machine (not Docker VM stats)
 - ✅ **Cross-Platform**: Works on Windows, Linux, and macOS
+- ✅ **Network & LAN Monitoring**: Real-time network I/O tracking and LAN IP detection
 - ✅ **Universal GPU Support**: Automatically detects NVIDIA, AMD, or Intel GPUs
 - ✅ **One-Click Execution**: Single entry point scripts that handle everything
 - ✅ **Error Handling**: Robust error handling for missing drivers or configurations
@@ -74,7 +75,7 @@ The launcher will:
 
 The system automatically detects GPU vendors and collects usage statistics:
 
-- **NVIDIA**: Uses `nvidia-smi` to get usage, memory, and temperature (requires NVIDIA drivers)
+- **NVIDIA**: Uses `nvidia-smi` to get usage, memory, temperature, power, and fan speed (requires NVIDIA drivers)
 - **AMD**: 
   - Primary: `rocm-smi` (ROCm drivers)
   - Fallback: `radeontop` (for older AMD GPUs)
@@ -91,7 +92,8 @@ The system automatically detects GPU vendors and collects usage statistics:
 - **CPU**: Usage percentage
 - **RAM**: Total, Used, Free (GB) and percentage
 - **Disk**: Total, Used, Free (GB) and percentage
-- **GPU**: Vendor, Model, Usage percentage, Memory usage, Temperature, Status
+- **Network**: Total I/O (KB/s) and LAN IP Address
+- **GPU**: Vendor, Model, Usage percentage, Memory usage, Temperature, Power Usage (W), Fan Speed (%), Status
 
 ## Troubleshooting
 
