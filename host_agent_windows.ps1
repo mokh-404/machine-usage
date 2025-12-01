@@ -24,7 +24,8 @@ function Get-CpuUsage {
     try {
         $cpu = Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average
         return [math]::Round($cpu.Average, 2)
-    } catch {
+    }
+    catch {
         return 0
     }
 }
@@ -39,16 +40,17 @@ function Get-RamUsage {
         $ramPercent = [math]::Round(($usedRamGB / $totalRamGB) * 100, 2)
         
         return @{
-            Total = $totalRamGB
-            Used = $usedRamGB
-            Free = $freeRamGB
+            Total   = $totalRamGB
+            Used    = $usedRamGB
+            Free    = $freeRamGB
             Percent = $ramPercent
         }
-    } catch {
+    }
+    catch {
         return @{
-            Total = 0
-            Used = 0
-            Free = 0
+            Total   = 0
+            Used    = 0
+            Free    = 0
             Percent = 0
         }
     }
@@ -64,31 +66,86 @@ function Get-DiskUsage {
         $percent = [math]::Round(($usedGB / $totalGB) * 100, 2)
         
         return @{
-            Total = $totalGB
-            Used = $usedGB
-            Free = $freeGB
+            Total   = $totalGB
+            Used    = $usedGB
+            Free    = $freeGB
             Percent = $percent
         }
-    } catch {
+    }
+    catch {
         return @{
-            Total = 0
-            Used = 0
-            Free = 0
+            Total   = 0
+            Used    = 0
+            Free    = 0
             Percent = 0
         }
     }
 }
 
+# Function to get LAN IP (IPv4)
+function Get-LanInfo {
+    try {
+        # Get the IPv4 address of the interface with a default gateway
+        $ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike "*Loopback*" -and $_.PrefixOrigin -ne "WellKnown" } | Select-Object -First 1).IPAddress
+        if ($null -eq $ip) {
+            return "Unknown"
+        }
+        return $ip
+    }
+    catch {
+        return "Unknown"
+    }
+}
+
+# Function to get Network usage
+function Get-NetworkUsage {
+    try {
+        $net = Get-Counter "\Network Interface(*)\Bytes Total/sec" -ErrorAction SilentlyContinue
+        $totalBytes = ($net.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum
+        $totalKb = [math]::Round($totalBytes / 1KB, 2)
+        return $totalKb
+    }
+    catch {
+        return 0
+    }
+}
+
+# Function to write metrics with retry logic to handle file locking
+function Write-MetricsWithRetry {
+    param (
+        [string]$Path,
+        [string]$Content
+    )
+    $maxRetries = 5
+    $retryDelayMs = 100
+    
+    for ($i = 0; $i -lt $maxRetries; $i++) {
+        try {
+            $Content | Set-Content -Path $Path -Force -ErrorAction Stop
+            return $true
+        }
+        catch {
+            if ($i -eq $maxRetries - 1) {
+                throw $_
+            }
+            Start-Sleep -Milliseconds $retryDelayMs
+        }
+    }
+    return $false
+}
+
 # Function to detect and get GPU info
 function Get-GpuInfo {
     $gpuInfo = @{
-        Vendor = "Unknown"
-        Model = "Not Detected"
-        Usage = 0
-        MemoryUsed = 0
+        Vendor      = "Unknown"
+        Model       = "Not Detected"
+        Usage       = 0
+        MemoryUsed  = 0
         MemoryTotal = 0
         Temperature = 0
-        Status = "Not Available"
+        PowerW      = 0
+        FanSpeed    = 0
+        Status      = "Not Available"
     }
     
     # Try NVIDIA first
@@ -98,7 +155,8 @@ function Get-GpuInfo {
         $nvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($nvidiaSmi) {
             $nvidiaSmiPath = $nvidiaSmi.Path
-        } else {
+        }
+        else {
             # Try common installation paths
             $commonPaths = @(
                 "${env:ProgramFiles}\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
@@ -118,7 +176,7 @@ function Get-GpuInfo {
             try {
                 $processInfo = New-Object System.Diagnostics.ProcessStartInfo
                 $processInfo.FileName = $nvidiaSmiPath
-                $processInfo.Arguments = "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits"
+                $processInfo.Arguments = "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed --format=csv,noheader,nounits"
                 $processInfo.RedirectStandardOutput = $true
                 $processInfo.RedirectStandardError = $true
                 $processInfo.UseShellExecute = $false
@@ -132,11 +190,12 @@ function Get-GpuInfo {
                 
                 # Clean up the output - remove any header lines or extra text
                 $nvidiaOutput = ($nvidiaOutput -split "`n" | Where-Object { 
-                    $_ -match ',' -and $_ -notmatch '^name,' -and $_.Trim() -ne '' 
-                } | Select-Object -First 1).Trim()
-            } catch {
+                        $_ -match ',' -and $_ -notmatch '^name,' -and $_.Trim() -ne '' 
+                    } | Select-Object -First 1).Trim()
+            }
+            catch {
                 # Fallback to simple execution
-                $nvidiaOutput = & $nvidiaSmiPath --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>$null
+                $nvidiaOutput = & $nvidiaSmiPath --query-gpu=name, utilization.gpu, memory.used, memory.total, temperature.gpu, power.draw, fan.speed --format=csv, noheader, nounits 2>$null
             }
             
             if ($nvidiaOutput -and $nvidiaOutput.Trim() -ne "") {
@@ -150,7 +209,14 @@ function Get-GpuInfo {
                 
                 if ($parts.Count -ge 5) {
                     $gpuInfo.Vendor = "NVIDIA"
-                    $gpuInfo.Model = ($parts[0] -replace '\s+', ' ').Trim()
+                    $rawModel = ($parts[0] -replace '\s+', ' ').Trim()
+                    # Remove Vendor from Model if present to avoid "NVIDIA NVIDIA..."
+                    if ($rawModel -match "^NVIDIA\s+(.*)") {
+                        $gpuInfo.Model = $matches[1]
+                    }
+                    else {
+                        $gpuInfo.Model = $rawModel
+                    }
                     
                     # Parse usage (remove any whitespace and non-numeric)
                     $usageStr = ($parts[1] -replace '[^\d]', '').Trim()
@@ -179,6 +245,24 @@ function Get-GpuInfo {
                     if ([int]::TryParse($tempStr, [ref]$tempVal)) {
                         $gpuInfo.Temperature = $tempVal
                     }
+
+                    # Parse power (if available)
+                    if ($parts.Count -ge 6) {
+                        $powerStr = ($parts[5] -replace '[^\d.]', '').Trim()
+                        $powerVal = 0.0
+                        if ([double]::TryParse($powerStr, [ref]$powerVal)) {
+                            $gpuInfo.PowerW = [math]::Round($powerVal, 1)
+                        }
+                    }
+
+                    # Parse fan speed (if available)
+                    if ($parts.Count -ge 7) {
+                        $fanStr = ($parts[6] -replace '[^\d]', '').Trim()
+                        $fanVal = 0
+                        if ([int]::TryParse($fanStr, [ref]$fanVal)) {
+                            $gpuInfo.FanSpeed = $fanVal
+                        }
+                    }
                     
                     # If we successfully parsed nvidia-smi output, return it
                     # Usage can be 0 (idle GPU), so we check if we got valid data
@@ -189,7 +273,8 @@ function Get-GpuInfo {
                 }
             }
         }
-    } catch {
+    }
+    catch {
         # NVIDIA not available, continue
         # Uncomment for debugging: Write-Host "NVIDIA-SMI Error: $_" -ForegroundColor Yellow
     }
@@ -199,7 +284,7 @@ function Get-GpuInfo {
         # Try amd-smi (AMD's equivalent to nvidia-smi)
         $amdSmi = Get-Command amd-smi -ErrorAction SilentlyContinue
         if ($amdSmi) {
-            $amdOutput = amd-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>$null
+            $amdOutput = amd-smi --query-gpu=name, utilization.gpu, memory.used, memory.total, temperature.gpu --format=csv, noheader, nounits 2>$null
             if ($amdOutput -and $amdOutput.Trim() -ne "") {
                 $parts = $amdOutput -split ','
                 if ($parts.Count -ge 5) {
@@ -214,7 +299,8 @@ function Get-GpuInfo {
                 }
             }
         }
-    } catch {
+    }
+    catch {
         # AMD tools not available
     }
     
@@ -224,9 +310,11 @@ function Get-GpuInfo {
         if ($gpu) {
             if ($gpu.Name -like "*NVIDIA*") {
                 $gpuInfo.Vendor = "NVIDIA"
-            } elseif ($gpu.Name -like "*AMD*" -or $gpu.Name -like "*Radeon*") {
+            }
+            elseif ($gpu.Name -like "*AMD*" -or $gpu.Name -like "*Radeon*") {
                 $gpuInfo.Vendor = "AMD"
-            } elseif ($gpu.Name -like "*Intel*") {
+            }
+            elseif ($gpu.Name -like "*Intel*") {
                 $gpuInfo.Vendor = "Intel"
             }
             $gpuInfo.Model = $gpu.Name
@@ -236,7 +324,8 @@ function Get-GpuInfo {
                 $gpuInfo.MemoryTotal = [math]::Round($gpu.AdapterRAM / 1GB, 2)
             }
         }
-    } catch {
+    }
+    catch {
         # WMI query failed
     }
     
@@ -253,7 +342,8 @@ function Get-GpuInfo {
                     }
                 }
             }
-        } catch {
+        }
+        catch {
             # Performance counters not available
         }
         
@@ -261,7 +351,8 @@ function Get-GpuInfo {
         if ($gpuInfo.Status -eq "Not Available") {
             if ($gpuInfo.MemoryTotal -gt 0) {
                 $gpuInfo.Status = "Detected (Memory: $($gpuInfo.MemoryTotal)GB Total)"
-            } else {
+            }
+            else {
                 $gpuInfo.Status = "Detected (No Stats Available)"
             }
         }
@@ -273,62 +364,91 @@ function Get-GpuInfo {
 # Main loop
 $ErrorActionPreference = "SilentlyContinue"
 while ($true) {
+    $loopStartTime = Get-Date
     try {
-        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $timestamp = $loopStartTime.ToString("yyyy-MM-dd HH:mm:ss")
         
         # Collect metrics
         $cpuPercent = Get-CpuUsage
         $ram = Get-RamUsage
+        $ram = Get-RamUsage
         $disk = Get-DiskUsage
+        $netKb = Get-NetworkUsage
+        $lanInfo = Get-LanInfo
         $gpu = Get-GpuInfo
         
         # Build JSON object
         $metrics = @{
             timestamp = $timestamp
-            cpu = @{
+            cpu       = @{
                 percent = $cpuPercent
             }
-            ram = @{
+            ram       = @{
                 total_gb = $ram.Total
-                used_gb = $ram.Used
-                free_gb = $ram.Free
-                percent = $ram.Percent
+                used_gb  = $ram.Used
+                free_gb  = $ram.Free
+                percent  = $ram.Percent
             }
-            disk = @{
+            disk      = @{
                 total_gb = $disk.Total
-                used_gb = $disk.Used
-                free_gb = $disk.Free
-                percent = $disk.Percent
+                used_gb  = $disk.Used
+                free_gb  = $disk.Free
+                percent  = $disk.Percent
             }
-            gpu = @{
-                vendor = $gpu.Vendor
-                model = $gpu.Model
-                usage_percent = $gpu.Usage
-                memory_used_gb = $gpu.MemoryUsed
-                memory_total_gb = $gpu.MemoryTotal
-                temperature_c = $gpu.Temperature
-                status = $gpu.Status
+            network   = @{
+                total_kb_sec = $netKb
+            }
+            lan       = @{
+                ip_address = $lanInfo
+            }
+            gpu       = @{
+                vendor            = $gpu.Vendor
+                model             = $gpu.Model
+                usage_percent     = $gpu.Usage
+                memory_used_gb    = $gpu.MemoryUsed
+                memory_total_gb   = $gpu.MemoryTotal
+                temperature_c     = $gpu.Temperature
+                fan_speed_percent = $gpu.FanSpeed
+                status            = $gpu.Status
             }
         }
         
-        # Convert to JSON and write to file
-        $json = $metrics | ConvertTo-Json -Compress
-        $json | Set-Content -Path $MetricsFile -Force
+        # Convert to JSON
+        $json = $metrics | ConvertTo-Json -Depth 5 -Compress
+        
+        # Write to file with retry
+        # Write to file with retry
+        Write-MetricsWithRetry -Path $metricsFile -Content $json | Out-Null
         
         # Optional: Write status to console (can be hidden)
         $gpuInfo = "$($gpu.Vendor) $($gpu.Model)"
-        if ($gpu.Usage -gt 0) {
-            $gpuInfo += " ($($gpu.Usage)%)"
-        }
+        
+        # Always show usage to prevent flickering
+        $gpuInfo += " [$($gpu.Usage)%]"
+        
         if ($gpu.MemoryUsed -gt 0 -and $gpu.MemoryTotal -gt 0) {
             $gpuInfo += " [$($gpu.MemoryUsed)GB/$($gpu.MemoryTotal)GB]"
         }
-        Write-Host "[$timestamp] CPU: $cpuPercent% | RAM: $($ram.Used)GB/$($ram.Total)GB | Disk: $($disk.Used)GB/$($disk.Total)GB | GPU: $gpuInfo" -ForegroundColor Gray
+        if ($gpu.Temperature -gt 0) {
+            $gpuInfo += " Temp: $($gpu.Temperature)C"
+        }
+        if ($gpu.PowerW -gt 0) {
+            $gpuInfo += " Pwr: $($gpu.PowerW)W"
+        }
+        # Fan speed removed from console as requested
+        Write-Host "[$timestamp] CPU: $cpuPercent% | RAM: $($ram.Used)GB/$($ram.Total)GB | Disk: $($disk.Used)GB/$($disk.Total)GB | Net: ${netKb}KB/s | LAN: $lanInfo | GPU: $gpuInfo" -ForegroundColor Gray
         
-    } catch {
+    }
+    catch {
         Write-Host "Error collecting metrics: $_" -ForegroundColor Red
     }
     
-    Start-Sleep -Seconds $Interval
+    # Dynamic Sleep: Calculate how long to sleep to maintain the interval
+    $elapsed = (Get-Date) - $loopStartTime
+    $sleepSeconds = $Interval - $elapsed.TotalSeconds
+    
+    if ($sleepSeconds -gt 0) {
+        Start-Sleep -Seconds $sleepSeconds
+    }
 }
 

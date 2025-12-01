@@ -10,7 +10,8 @@ $nvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
 if ($nvidiaSmi) {
     $nvidiaSmiPath = $nvidiaSmi.Path
     Write-Host "Found nvidia-smi in PATH: $nvidiaSmiPath" -ForegroundColor Green
-} else {
+}
+else {
     Write-Host "nvidia-smi not found in PATH, checking common locations..." -ForegroundColor Yellow
     $commonPaths = @(
         "${env:ProgramFiles}\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
@@ -39,7 +40,7 @@ Write-Host "Command: $nvidiaSmiPath $query" -ForegroundColor Gray
 Write-Host ""
 
 try {
-    $output = & $nvidiaSmiPath --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>&1
+    $output = & $nvidiaSmiPath --query-gpu=name, utilization.gpu, memory.used, memory.total, temperature.gpu --format=csv, noheader, nounits 2>&1
     
     if ($LASTEXITCODE -eq 0) {
         Write-Host "SUCCESS! Output:" -ForegroundColor Green
@@ -58,11 +59,13 @@ try {
         Write-Host "  Memory Used: $($parts[2]) MB" -ForegroundColor White
         Write-Host "  Memory Total: $($parts[3]) MB" -ForegroundColor White
         Write-Host "  Temperature: $($parts[4]) C" -ForegroundColor White
-    } else {
+    }
+    else {
         Write-Host "ERROR: nvidia-smi returned exit code $LASTEXITCODE" -ForegroundColor Red
         Write-Host "Output: $output" -ForegroundColor Yellow
     }
-} catch {
+}
+catch {
     Write-Host "ERROR: Exception occurred" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
 }

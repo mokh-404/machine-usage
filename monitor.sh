@@ -28,6 +28,23 @@ get_ram() {
     fi
 }
 
+# Function: Get Network Usage
+# Logic: Reads the text file written by the Windows PowerShell script
+get_network() {
+    if [ -f "$METRICS_FILE" ]; then
+        # Cut splits by '|', takes 3rd part. Sed removes "NET:"
+        # If the file doesn't have the 3rd part yet (old format), handle gracefully
+        NET_DATA=$(cat "$METRICS_FILE" | cut -d'|' -f3)
+        if [[ "$NET_DATA" == *"NET:"* ]]; then
+            echo "$NET_DATA" | sed 's/NET://'
+        else
+            echo "Waiting for Data..."
+        fi
+    else
+        echo "0 KB/s"
+    fi
+}
+
 # Function: Get Disk Usage (C: Drive)
 # Logic: Checks the specific mount point for the Windows C drive
 get_disk() {
@@ -43,15 +60,23 @@ get_disk() {
 
 # Function: Get GPU Usage
 # Logic: Uses nvidia-smi command passed through from host
+# Function: Get GPU Usage & Health
+# Logic: Uses nvidia-smi command passed through from host
 get_gpu() {
     # 1. Check if the command exists
     if command -v nvidia-smi &> /dev/null; then
         # 2. Try to run it. Hide errors (2> /dev/null) to prevent spam.
-        USAGE=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2> /dev/null)
+        # Query: Utilization, Temperature, Power Draw
+        STATS=$(nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw --format=csv,noheader,nounits 2> /dev/null)
         
-        # 3. Check if we got a number back
-        if [ -n "$USAGE" ]; then
-            echo "${USAGE}%"
+        # 3. Check if we got data back
+        if [ -n "$STATS" ]; then
+            # Format comes as: 15, 45, 25.5
+            # We parse it to make it readable
+            UTIL=$(echo "$STATS" | cut -d',' -f1)
+            TEMP=$(echo "$STATS" | cut -d',' -f2)
+            POWER=$(echo "$STATS" | cut -d',' -f3)
+            echo "Load: ${UTIL}% | Temp: ${TEMP}°C | Power: ${POWER}W"
         else
             echo "Not Available (Check Driver/Container)"
         fi
@@ -73,8 +98,9 @@ generate_report() {
     echo "<ul>" >> $REPORT_FILE
     echo "<li><b>Real CPU Load:</b> $(get_cpu)</li>" >> $REPORT_FILE
     echo "<li><b>Real RAM Usage:</b> $(get_ram)</li>" >> $REPORT_FILE
+    echo "<li><b>Network I/O:</b> $(get_network)</li>" >> $REPORT_FILE
     echo "<li><b>Disk (C:):</b> $(get_disk)</li>" >> $REPORT_FILE
-    echo "<li><b>GPU Usage:</b> $(get_gpu)</li>" >> $REPORT_FILE
+    echo "<li><b>GPU Health:</b> $(get_gpu)</li>" >> $REPORT_FILE
     echo "</ul>" >> $REPORT_FILE
     echo "<p><i>Data provided by Hybrid Docker Agent</i></p>" >> $REPORT_FILE
     echo "</body></html>" >> $REPORT_FILE
@@ -91,6 +117,7 @@ while true; do
     echo "--------------------------------------"
     echo "Real CPU:   $(get_cpu)"
     echo "Real RAM:   $(get_ram)"
+    echo "Network:    $(get_network)"
     echo "Disk (C:):  $(get_disk)"
     echo "Real GPU:   $(get_gpu)"
     echo "======================================"

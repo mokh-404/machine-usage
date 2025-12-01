@@ -62,6 +62,21 @@ parse_json() {
             ".gpu.status")
                 grep -o '"status":"[^"]*"' "$json_file" | cut -d'"' -f4
                 ;;
+            ".gpu.temperature_c")
+                grep -o '"temperature_c":[0-9.]*' "$json_file" | cut -d':' -f2
+                ;;
+            ".gpu.power_w")
+                grep -o '"power_w":[0-9.]*' "$json_file" | cut -d':' -f2
+                ;;
+            ".gpu.fan_speed_percent")
+                grep -o '"fan_speed_percent":[0-9.]*' "$json_file" | cut -d':' -f2
+                ;;
+            ".network.total_kb_sec")
+                grep -o '"total_kb_sec":[0-9.]*' "$json_file" | cut -d':' -f2
+                ;;
+            ".lan.ip_address")
+                grep -o '"ip_address":"[^"]*"' "$json_file" | cut -d'"' -f4
+                ;;
             ".timestamp")
                 grep -o '"timestamp":"[^"]*"' "$json_file" | cut -d'"' -f4
                 ;;
@@ -119,6 +134,11 @@ show_dashboard() {
     local gpu_model=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.model")" "Not Detected")
     local gpu_usage=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.usage_percent")" "0")
     local gpu_status=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.status")" "Not Available")
+    local gpu_temp=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.temperature_c")" "0")
+    local gpu_power=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.power_w")" "0")
+    local gpu_fan=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.fan_speed_percent")" "0")
+    local net_kb=$(format_value "$(parse_json "$METRICS_FILE" ".network.total_kb_sec")" "0")
+    local lan_ip=$(format_value "$(parse_json "$METRICS_FILE" ".lan.ip_address")" "Unknown")
     local timestamp=$(format_value "$(parse_json "$METRICS_FILE" ".timestamp")" "Waiting...")
     
     # Convert to integers for progress bars
@@ -139,10 +159,12 @@ show_dashboard() {
     info_text+="$(create_progress_bar $ram_int)\n\n"
     info_text+="Disk: ${disk_used} GB / ${disk_total} GB (${disk_percent}%)\n"
     info_text+="$(create_progress_bar $disk_int)\n\n"
+    info_text+="Network I/O: ${net_kb} KB/s | LAN IP: ${lan_ip}\n\n"
     info_text+="GPU: $gpu_vendor $gpu_model\n"
     if [ "$gpu_status" != "Not Available" ] && [ "$gpu_status" != "Not Detected" ]; then
         info_text+="GPU Usage: ${gpu_usage}% ($gpu_status)\n"
         info_text+="$(create_progress_bar $gpu_int)\n"
+        info_text+="Temp: ${gpu_temp}°C | Power: ${gpu_power}W | Fan: ${gpu_fan}%\n"
     else
         info_text+="GPU Status: $gpu_status\n"
     fi
@@ -152,7 +174,7 @@ show_dashboard() {
     whiptail --title "System Monitor Dashboard" \
         --backtitle "Real-Time System Metrics" \
         --infobox "$info_text" \
-        25 70 2>/dev/null || true
+        25 76 2>/dev/null || true
 }
 
 # Function to display simple text dashboard (fallback)
@@ -181,6 +203,7 @@ show_text_dashboard() {
     local gpu_model=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.model")" "Not Detected")
     local gpu_usage=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.usage_percent")" "0")
     local gpu_status=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.status")" "Not Available")
+    local lan_ip=$(format_value "$(parse_json "$METRICS_FILE" ".lan.ip_address")" "Unknown")
     local timestamp=$(format_value "$(parse_json "$METRICS_FILE" ".timestamp")" "Waiting...")
     
     local cpu_int=$(get_int "$cpu")
@@ -199,10 +222,13 @@ show_text_dashboard() {
     echo -e "Disk Usage: ${YELLOW}${disk_used} GB / ${disk_total} GB${NC} (${disk_percent}%)"
     echo "$(create_progress_bar $disk_int)"
     echo ""
+    echo -e "Network I/O: ${net_kb} KB/s | LAN IP: ${lan_ip}"
+    echo ""
     echo "GPU:        ${gpu_vendor} ${gpu_model}"
     if [ "$gpu_status" != "Not Available" ] && [ "$gpu_status" != "Not Detected" ]; then
         echo -e "GPU Usage:  ${gpu_usage}% (${gpu_status})"
         echo "$(create_progress_bar $gpu_int)"
+        echo -e "GPU Health: Temp: ${gpu_temp}°C | Power: ${gpu_power}W | Fan: ${gpu_fan}%"
     else
         echo "GPU Status: $gpu_status"
     fi
