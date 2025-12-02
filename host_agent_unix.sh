@@ -131,6 +131,82 @@ get_disk_usage() {
     fi
 }
 
+# Function to get Network usage (Total KB/s)
+get_network_usage() {
+    if [[ "$OS_TYPE" == "Linux" ]]; then
+        # Linux: Read /proc/net/dev
+        # Get sum of bytes for all non-loopback interfaces
+        local curr_bytes=$(awk '/:/ {if ($1 !~ /lo/) sum+=$2+$10} END {print sum}' /proc/net/dev)
+        
+        if [ -f /tmp/net_prev ]; then
+            local prev_bytes=$(cat /tmp/net_prev)
+            local diff_bytes=$((curr_bytes - prev_bytes))
+            
+            # Handle counter wrap-around or restart
+            if [ $diff_bytes -lt 0 ]; then
+                diff_bytes=0
+            fi
+            
+            # Calculate KB/s (assuming INTERVAL seconds)
+            local kb_sec=$(calc "$diff_bytes / 1024 / $INTERVAL")
+            echo "$kb_sec"
+        else
+            echo "0"
+        fi
+        echo "$curr_bytes" > /tmp/net_prev
+    elif [[ "$OS_TYPE" == "macOS" ]]; then
+        # macOS: Use netstat
+        local curr_bytes=$(netstat -ib | grep -v "lo0" | grep "Link#" | awk '{sum+=$7+$10} END {print sum}')
+        
+        if [ -f /tmp/net_prev ]; then
+            local prev_bytes=$(cat /tmp/net_prev)
+            local diff_bytes=$((curr_bytes - prev_bytes))
+            
+            if [ $diff_bytes -lt 0 ]; then
+                diff_bytes=0
+            fi
+            
+            local kb_sec=$(calc "$diff_bytes / 1024 / $INTERVAL")
+            echo "$kb_sec"
+        else
+            echo "0"
+        fi
+        echo "$curr_bytes" > /tmp/net_prev
+    else
+        echo "0"
+    fi
+}
+
+# Function to get LAN IP (IPv4)
+get_lan_info() {
+    local ip="Unknown"
+    if [[ "$OS_TYPE" == "Linux" ]]; then
+        # Try hostname -I first
+        if command -v hostname &> /dev/null; then
+            ip=$(hostname -I | awk '{print $1}')
+        fi
+        
+        # Fallback to ip route
+        if [ -z "$ip" ] || [ "$ip" == "" ]; then
+            if command -v ip &> /dev/null; then
+                ip=$(ip route get 1 2>/dev/null | awk '{print $7; exit}')
+            fi
+        fi
+    elif [[ "$OS_TYPE" == "macOS" ]]; then
+        # Try ipconfig getifaddr for en0 (WiFi) or en1
+        ip=$(ipconfig getifaddr en0 2>/dev/null)
+        if [ -z "$ip" ]; then
+            ip=$(ipconfig getifaddr en1 2>/dev/null)
+        fi
+    fi
+    
+    if [ -z "$ip" ]; then
+        echo "Unknown"
+    else
+        echo "$ip"
+    fi
+}
+
 # Function to detect and get GPU info
 get_gpu_info() {
     local vendor="Unknown"
@@ -335,9 +411,11 @@ create_json() {
     local gpu_mem_total="${15}"
     local gpu_temp="${16}"
     local gpu_status="${17}"
+    local net_kb="${18}"
+    local lan_ip="${19}"
     
     cat <<EOF
-{"timestamp":"$timestamp","cpu":{"percent":$cpu},"ram":{"total_gb":$ram_total,"used_gb":$ram_used,"free_gb":$ram_free,"percent":$ram_percent},"disk":{"total_gb":$disk_total,"used_gb":$disk_used,"free_gb":$disk_free,"percent":$disk_percent},"gpu":{"vendor":"$gpu_vendor","model":"$gpu_model","usage_percent":$gpu_usage,"memory_used_gb":$gpu_mem_used,"memory_total_gb":$gpu_mem_total,"temperature_c":$gpu_temp,"status":"$gpu_status"}}
+{"timestamp":"$timestamp","cpu":{"percent":$cpu},"ram":{"total_gb":$ram_total,"used_gb":$ram_used,"free_gb":$ram_free,"percent":$ram_percent},"disk":{"total_gb":$disk_total,"used_gb":$disk_used,"free_gb":$disk_free,"percent":$disk_percent},"network":{"total_kb_sec":$net_kb},"lan":{"ip_address":"$lan_ip"},"gpu":{"vendor":"$gpu_vendor","model":"$gpu_model","usage_percent":$gpu_usage,"memory_used_gb":$gpu_mem_used,"memory_total_gb":$gpu_mem_total,"temperature_c":$gpu_temp,"status":"$gpu_status"}}
 EOF
 }
 
@@ -350,6 +428,8 @@ while true; do
     ram_data=$(get_ram_usage)
     disk_data=$(get_disk_usage)
     gpu_data=$(get_gpu_info)
+    net_kb=$(get_network_usage)
+    lan_ip=$(get_lan_info)
     
     # Parse RAM data
     ram_used=$(echo "$ram_data" | cut -d'|' -f1)
@@ -375,13 +455,14 @@ while true; do
     # Create JSON
     json=$(create_json "$timestamp" "$cpu" "$ram_used" "$ram_total" "$ram_free" "$ram_percent" \
                       "$disk_used" "$disk_total" "$disk_free" "$disk_percent" \
-                      "$gpu_vendor" "$gpu_model" "$gpu_usage" "$gpu_mem_used" "$gpu_mem_total" "$gpu_temp" "$gpu_status")
+                      "$gpu_vendor" "$gpu_model" "$gpu_usage" "$gpu_mem_used" "$gpu_mem_total" "$gpu_temp" "$gpu_status" \
+                      "$net_kb" "$lan_ip")
     
     # Write to file
     echo "$json" > "$METRICS_FILE"
     
     # Optional: Log to console
-    echo "[$timestamp] CPU: ${cpu}% | RAM: ${ram_used}GB/${ram_total}GB | Disk: ${disk_used}GB/${disk_total}GB | GPU: $gpu_vendor $gpu_model" >&2
+    echo "[$timestamp] CPU: ${cpu}% | RAM: ${ram_used}GB/${ram_total}GB | Disk: ${disk_used}GB/${disk_total}GB | Net: ${net_kb}KB/s | LAN: ${lan_ip} | GPU: $gpu_vendor $gpu_model" >&2
     
     sleep "$INTERVAL"
 done
