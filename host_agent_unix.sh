@@ -40,6 +40,44 @@ calc() {
     fi
 }
 
+# Function to get CPU Model
+get_cpu_model() {
+    if [[ "$OS_TYPE" == "Linux" ]]; then
+        local model=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | sed 's/^[ \t]*//')
+        echo "${model:-Unknown CPU}"
+    elif [[ "$OS_TYPE" == "macOS" ]]; then
+        local model=$(sysctl -n machdep.cpu.brand_string)
+        echo "${model:-Unknown CPU}"
+    else
+        echo "Unknown CPU"
+    fi
+}
+
+# Function to get CPU Temperature
+get_cpu_temp() {
+    if [[ "$OS_TYPE" == "Linux" ]]; then
+        # Try to find a valid thermal zone
+        # Prioritize x86_pkg_temp (package temperature)
+        local temp_path=$(grep -l "x86_pkg_temp" /sys/class/thermal/thermal_zone*/type 2>/dev/null | sed 's/type/temp/')
+        
+        if [ -z "$temp_path" ]; then
+            # Fallback to first thermal zone
+            temp_path="/sys/class/thermal/thermal_zone0/temp"
+        fi
+        
+        if [ -f "$temp_path" ]; then
+            local temp_millideg=$(cat "$temp_path")
+            # Convert to degrees Celsius
+            calc "$temp_millideg / 1000"
+        else
+            echo "0"
+        fi
+    else
+        # macOS requires sudo/powermetrics, return 0 for now
+        echo "0"
+    fi
+}
+
 # Function to get CPU usage (works on both Linux and macOS)
 get_cpu_usage() {
     if [[ "$OS_TYPE" == "Linux" ]]; then
@@ -177,34 +215,57 @@ get_network_usage() {
     fi
 }
 
-# Function to get LAN IP (IPv4)
-get_lan_info() {
-    local ip="Unknown"
+# Function to get Network Details (LAN Speed, WiFi Info)
+get_network_details() {
+    local lan_speed="Not Connected"
+    local wifi_speed="Not Connected"
+    local wifi_type="Unknown"
+    local wifi_model="Unknown"
+    
     if [[ "$OS_TYPE" == "Linux" ]]; then
-        # Try hostname -I first
-        if command -v hostname &> /dev/null; then
-            ip=$(hostname -I | awk '{print $1}')
-        fi
+        # Find default interface
+        local default_iface=$(ip route get 1 2>/dev/null | awk '{print $5; exit}')
         
-        # Fallback to ip route
-        if [ -z "$ip" ] || [ "$ip" == "" ]; then
-            if command -v ip &> /dev/null; then
-                ip=$(ip route get 1 2>/dev/null | awk '{print $7; exit}')
+        if [ -n "$default_iface" ]; then
+            # Check if it's wireless
+            if [ -d "/sys/class/net/$default_iface/wireless" ] || [ -e "/proc/net/wireless" ] && grep -q "$default_iface" /proc/net/wireless; then
+                # WiFi
+                if command -v iwconfig &> /dev/null; then
+                    local iw_out=$(iwconfig "$default_iface" 2>/dev/null)
+                    wifi_speed=$(echo "$iw_out" | grep "Bit Rate" | awk -F'=' '{print $2}' | awk '{print $1 " " $2}')
+                    wifi_type="802.11" # Generic, hard to get specific generation without 'iw'
+                    if [[ "$iw_out" == *"IEEE 802.11"* ]]; then
+                         wifi_type=$(echo "$iw_out" | grep -o "IEEE 802.11[^ ]*")
+                    fi
+                fi
+                # Try to get model from lspci or lsusb
+                # Simplified: just say "Wireless Interface"
+                wifi_model="Wireless Interface ($default_iface)"
+            else
+                # Wired
+                if [ -f "/sys/class/net/$default_iface/speed" ]; then
+                    local speed=$(cat "/sys/class/net/$default_iface/speed" 2>/dev/null)
+                    if [ -n "$speed" ]; then
+                        lan_speed="${speed} Mbps"
+                    fi
+                fi
             fi
         fi
     elif [[ "$OS_TYPE" == "macOS" ]]; then
-        # Try ipconfig getifaddr for en0 (WiFi) or en1
-        ip=$(ipconfig getifaddr en0 2>/dev/null)
-        if [ -z "$ip" ]; then
-            ip=$(ipconfig getifaddr en1 2>/dev/null)
+        # macOS WiFi
+        local wifi_info=$(/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I 2>/dev/null)
+        if [ -n "$wifi_info" ] && echo "$wifi_info" | grep -q "SSID"; then
+             local rate=$(echo "$wifi_info" | grep "lastTxRate" | awk '{print $2}')
+             wifi_speed="${rate} Mbps"
+             wifi_type="802.11"
+             wifi_model="AirPort"
+        else
+             # Wired check (simplified)
+             lan_speed="Unknown (macOS)"
         fi
     fi
     
-    if [ -z "$ip" ]; then
-        echo "Unknown"
-    else
-        echo "$ip"
-    fi
+    echo "$lan_speed|$wifi_speed|$wifi_type|$wifi_model"
 }
 
 # Function to detect and get GPU info
@@ -396,26 +457,31 @@ get_gpu_info() {
 create_json() {
     local timestamp="$1"
     local cpu="$2"
-    local ram_used="$3"
-    local ram_total="$4"
-    local ram_free="$5"
-    local ram_percent="$6"
-    local disk_used="$7"
-    local disk_total="$8"
-    local disk_free="$9"
-    local disk_percent="${10}"
-    local gpu_vendor="${11}"
-    local gpu_model="${12}"
-    local gpu_usage="${13}"
-    local gpu_mem_used="${14}"
-    local gpu_mem_total="${15}"
-    local gpu_temp="${16}"
-    local gpu_status="${17}"
-    local net_kb="${18}"
-    local lan_ip="${19}"
+    local cpu_temp="$3"
+    local cpu_model="$4"
+    local ram_used="$5"
+    local ram_total="$6"
+    local ram_free="$7"
+    local ram_percent="$8"
+    local disk_used="$9"
+    local disk_total="${10}"
+    local disk_free="${11}"
+    local disk_percent="${12}"
+    local gpu_vendor="${13}"
+    local gpu_model="${14}"
+    local gpu_usage="${15}"
+    local gpu_mem_used="${16}"
+    local gpu_mem_total="${17}"
+    local gpu_temp="${18}"
+    local gpu_status="${19}"
+    local net_kb="${20}"
+    local lan_speed="${21}"
+    local wifi_speed="${22}"
+    local wifi_type="${23}"
+    local wifi_model="${24}"
     
     cat <<EOF
-{"timestamp":"$timestamp","cpu":{"percent":$cpu},"ram":{"total_gb":$ram_total,"used_gb":$ram_used,"free_gb":$ram_free,"percent":$ram_percent},"disk":{"total_gb":$disk_total,"used_gb":$disk_used,"free_gb":$disk_free,"percent":$disk_percent},"network":{"total_kb_sec":$net_kb},"lan":{"ip_address":"$lan_ip"},"gpu":{"vendor":"$gpu_vendor","model":"$gpu_model","usage_percent":$gpu_usage,"memory_used_gb":$gpu_mem_used,"memory_total_gb":$gpu_mem_total,"temperature_c":$gpu_temp,"status":"$gpu_status"}}
+{"timestamp":"$timestamp","cpu":{"percent":$cpu,"temperature_c":$cpu_temp,"cpu_model_name":"$cpu_model"},"ram":{"total_gb":$ram_total,"used_gb":$ram_used,"free_gb":$ram_free,"percent":$ram_percent},"disk":{"total_gb":$disk_total,"used_gb":$disk_used,"free_gb":$disk_free,"percent":$disk_percent},"network":{"total_kb_sec":$net_kb,"lan_speed":"$lan_speed","wifi_speed":"$wifi_speed","wifi_type":"$wifi_type","wifi_model":"$wifi_model"},"gpu":{"vendor":"$gpu_vendor","model":"$gpu_model","usage_percent":$gpu_usage,"memory_used_gb":$gpu_mem_used,"memory_total_gb":$gpu_mem_total,"temperature_c":$gpu_temp,"status":"$gpu_status"}}
 EOF
 }
 
@@ -425,11 +491,19 @@ while true; do
     
     # Collect metrics
     cpu=$(get_cpu_usage)
+    cpu_temp=$(get_cpu_temp)
+    cpu_model=$(get_cpu_model)
     ram_data=$(get_ram_usage)
     disk_data=$(get_disk_usage)
     gpu_data=$(get_gpu_info)
     net_kb=$(get_network_usage)
-    lan_ip=$(get_lan_info)
+    net_details=$(get_network_details)
+    
+    # Parse Network Details
+    lan_speed=$(echo "$net_details" | cut -d'|' -f1)
+    wifi_speed=$(echo "$net_details" | cut -d'|' -f2)
+    wifi_type=$(echo "$net_details" | cut -d'|' -f3)
+    wifi_model=$(echo "$net_details" | cut -d'|' -f4)
     
     # Parse RAM data
     ram_used=$(echo "$ram_data" | cut -d'|' -f1)
@@ -453,16 +527,18 @@ while true; do
     gpu_status=$(echo "$gpu_data" | cut -d'|' -f7)
     
     # Create JSON
-    json=$(create_json "$timestamp" "$cpu" "$ram_used" "$ram_total" "$ram_free" "$ram_percent" \
+    json=$(create_json "$timestamp" "$cpu" "$cpu_temp" "$cpu_model" \
+                      "$ram_used" "$ram_total" "$ram_free" "$ram_percent" \
                       "$disk_used" "$disk_total" "$disk_free" "$disk_percent" \
                       "$gpu_vendor" "$gpu_model" "$gpu_usage" "$gpu_mem_used" "$gpu_mem_total" "$gpu_temp" "$gpu_status" \
-                      "$net_kb" "$lan_ip")
+                      "$net_kb" "$lan_speed" "$wifi_speed" "$wifi_type" "$wifi_model")
     
-    # Write to file
-    echo "$json" > "$METRICS_FILE"
+    # Write to file (Atomic Write)
+    echo "$json" > "${METRICS_FILE}.tmp"
+    mv "${METRICS_FILE}.tmp" "$METRICS_FILE"
     
     # Optional: Log to console
-    echo "[$timestamp] CPU: ${cpu}% | RAM: ${ram_used}GB/${ram_total}GB | Disk: ${disk_used}GB/${disk_total}GB | Net: ${net_kb}KB/s | LAN: ${lan_ip} | GPU: $gpu_vendor $gpu_model" >&2
+    echo "[$timestamp] CPU: $cpu_model | ${cpu}% (${cpu_temp}C) | RAM: ${ram_used}GB/${ram_total}GB | Disk: ${disk_used}GB/${disk_total}GB | Net: ${net_kb}KB/s | LAN: $lan_speed | WiFi: $wifi_speed | GPU: $gpu_vendor $gpu_model" >&2
     
     sleep "$INTERVAL"
 done

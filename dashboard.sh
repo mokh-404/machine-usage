@@ -3,7 +3,11 @@
 # Docker Container Dashboard - Displays system metrics using Whiptail
 # Reads metrics from shared /data/metrics.json file
 
-METRICS_FILE="/data/metrics.json"
+if [ -f "/data/metrics.json" ]; then
+    METRICS_FILE="/data/metrics.json"
+else
+    METRICS_FILE="./metrics/metrics.json"
+fi
 REFRESH_INTERVAL=2
 
 # Colors for terminal (fallback if whiptail not available)
@@ -17,6 +21,7 @@ NC='\033[0m' # No Color
 parse_json() {
     local json_file="$1"
     local key="$2"
+    # echo "DEBUG: key=$key file=$json_file" >> debug.log
     
     if [ ! -f "$json_file" ]; then
         echo ""
@@ -31,6 +36,12 @@ parse_json() {
         case "$key" in
             ".cpu.percent")
                 grep -o '"percent":[0-9.]*' "$json_file" | head -1 | cut -d':' -f2
+                ;;
+            ".cpu.model")
+                grep -o '"cpu_model_name":"[^"]*"' "$json_file" | cut -d'"' -f4
+                ;;
+            ".cpu.temperature_c")
+                grep -o '"temperature_c":[0-9.]*' "$json_file" | cut -d':' -f2
                 ;;
             ".ram.total_gb")
                 grep -o '"total_gb":[0-9.]*' "$json_file" | head -1 | cut -d':' -f2
@@ -74,8 +85,18 @@ parse_json() {
             ".network.total_kb_sec")
                 grep -o '"total_kb_sec":[0-9.]*' "$json_file" | cut -d':' -f2
                 ;;
-            ".lan.ip_address")
-                grep -o '"ip_address":"[^"]*"' "$json_file" | cut -d'"' -f4
+            ".network.lan_speed")
+                # Use sed for more robust extraction
+                grep -o '"lan_speed":"[^"]*"' "$json_file" | cut -d'"' -f4
+                ;;
+            ".network.wifi_speed")
+                grep -o '"wifi_speed":"[^"]*"' "$json_file" | cut -d'"' -f4
+                ;;
+            ".network.wifi_type")
+                grep -o '"wifi_type":"[^"]*"' "$json_file" | cut -d'"' -f4
+                ;;
+            ".network.wifi_model")
+                grep -o '"wifi_model":"[^"]*"' "$json_file" | cut -d'"' -f4
                 ;;
             ".timestamp")
                 grep -o '"timestamp":"[^"]*"' "$json_file" | cut -d'"' -f4
@@ -124,6 +145,7 @@ create_progress_bar() {
 # Function to display dashboard using whiptail
 show_dashboard() {
     local cpu=$(format_value "$(parse_json "$METRICS_FILE" ".cpu.percent")" "0")
+    local cpu_temp=$(format_value "$(parse_json "$METRICS_FILE" ".cpu.temperature_c")" "0")
     local ram_total=$(format_value "$(parse_json "$METRICS_FILE" ".ram.total_gb")" "0")
     local ram_used=$(format_value "$(parse_json "$METRICS_FILE" ".ram.used_gb")" "0")
     local ram_percent=$(format_value "$(parse_json "$METRICS_FILE" ".ram.percent")" "0")
@@ -138,7 +160,10 @@ show_dashboard() {
     local gpu_power=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.power_w")" "0")
     local gpu_fan=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.fan_speed_percent")" "0")
     local net_kb=$(format_value "$(parse_json "$METRICS_FILE" ".network.total_kb_sec")" "0")
-    local lan_ip=$(format_value "$(parse_json "$METRICS_FILE" ".lan.ip_address")" "Unknown")
+    local lan_speed=$(format_value "$(parse_json "$METRICS_FILE" ".network.lan_speed")" "Not Connected")
+    local wifi_speed=$(format_value "$(parse_json "$METRICS_FILE" ".network.wifi_speed")" "Not Connected")
+    local wifi_type=$(format_value "$(parse_json "$METRICS_FILE" ".network.wifi_type")" "Unknown")
+    local wifi_model=$(format_value "$(parse_json "$METRICS_FILE" ".network.wifi_model")" "")
     local timestamp=$(format_value "$(parse_json "$METRICS_FILE" ".timestamp")" "Waiting...")
     
     # Convert to integers for progress bars
@@ -153,13 +178,24 @@ show_dashboard() {
     info_text+="     SYSTEM MONITORING DASHBOARD\n"
     info_text+="═══════════════════════════════════════════════════════\n\n"
     info_text+="Last Update: $timestamp\n\n"
-    info_text+="CPU Usage: ${cpu}%\n"
+    
+    local cpu_model=$(format_value "$(parse_json "$METRICS_FILE" ".cpu.model")" "Unknown CPU")
+    info_text+="CPU: $cpu_model\n"
+    info_text+="Usage: ${cpu}% (${cpu_temp}°C)\n"
     info_text+="$(create_progress_bar $cpu_int)\n\n"
     info_text+="RAM: ${ram_used} GB / ${ram_total} GB (${ram_percent}%)\n"
     info_text+="$(create_progress_bar $ram_int)\n\n"
     info_text+="Disk: ${disk_used} GB / ${disk_total} GB (${disk_percent}%)\n"
     info_text+="$(create_progress_bar $disk_int)\n\n"
-    info_text+="Network I/O: ${net_kb} KB/s | LAN IP: ${lan_ip}\n\n"
+    info_text+="Network I/O: ${net_kb} KB/s\n"
+    info_text+="LAN Speed: ${lan_speed}\n"
+    if [ "$wifi_speed" != "Not Connected" ]; then
+        info_text+="WiFi: ${wifi_speed} (${wifi_type})\n"
+        if [ "$wifi_model" != "" ]; then
+            info_text+="      $wifi_model\n"
+        fi
+    fi
+    info_text+="\n"
     info_text+="GPU: $gpu_vendor $gpu_model\n"
     if [ "$gpu_status" != "Not Available" ] && [ "$gpu_status" != "Not Detected" ]; then
         info_text+="GPU Usage: ${gpu_usage}% ($gpu_status)\n"
@@ -193,6 +229,7 @@ show_text_dashboard() {
     fi
     
     local cpu=$(format_value "$(parse_json "$METRICS_FILE" ".cpu.percent")" "0")
+    local cpu_temp=$(format_value "$(parse_json "$METRICS_FILE" ".cpu.temperature_c")" "0")
     local ram_total=$(format_value "$(parse_json "$METRICS_FILE" ".ram.total_gb")" "0")
     local ram_used=$(format_value "$(parse_json "$METRICS_FILE" ".ram.used_gb")" "0")
     local ram_percent=$(format_value "$(parse_json "$METRICS_FILE" ".ram.percent")" "0")
@@ -203,7 +240,10 @@ show_text_dashboard() {
     local gpu_model=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.model")" "Not Detected")
     local gpu_usage=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.usage_percent")" "0")
     local gpu_status=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.status")" "Not Available")
-    local lan_ip=$(format_value "$(parse_json "$METRICS_FILE" ".lan.ip_address")" "Unknown")
+    local net_kb=$(format_value "$(parse_json "$METRICS_FILE" ".network.total_kb_sec")" "0")
+    local lan_speed=$(format_value "$(parse_json "$METRICS_FILE" ".network.lan_speed")" "Not Connected")
+    local wifi_speed=$(format_value "$(parse_json "$METRICS_FILE" ".network.wifi_speed")" "Not Connected")
+    local wifi_type=$(format_value "$(parse_json "$METRICS_FILE" ".network.wifi_type")" "Unknown")
     local timestamp=$(format_value "$(parse_json "$METRICS_FILE" ".timestamp")" "Waiting...")
     
     local cpu_int=$(get_int "$cpu")
@@ -213,7 +253,9 @@ show_text_dashboard() {
     
     echo "Last Update: $timestamp"
     echo ""
-    echo -e "CPU Usage:  ${GREEN}${cpu}%${NC}"
+    local cpu_model=$(format_value "$(parse_json "$METRICS_FILE" ".cpu.model")" "Unknown CPU")
+    echo "CPU:        $cpu_model"
+    echo -e "Usage:      ${GREEN}${cpu}%${NC} (${cpu_temp}°C)"
     echo "$(create_progress_bar $cpu_int)"
     echo ""
     echo -e "RAM Usage:  ${BLUE}${ram_used} GB / ${ram_total} GB${NC} (${ram_percent}%)"
@@ -222,7 +264,11 @@ show_text_dashboard() {
     echo -e "Disk Usage: ${YELLOW}${disk_used} GB / ${disk_total} GB${NC} (${disk_percent}%)"
     echo "$(create_progress_bar $disk_int)"
     echo ""
-    echo -e "Network I/O: ${net_kb} KB/s | LAN IP: ${lan_ip}"
+    echo -e "Network I/O: ${net_kb} KB/s"
+    echo -e "LAN Speed:   ${lan_speed}"
+    if [ "$wifi_speed" != "Not Connected" ]; then
+        echo -e "WiFi:        ${wifi_speed} (${wifi_type})"
+    fi
     echo ""
     echo "GPU:        ${gpu_vendor} ${gpu_model}"
     if [ "$gpu_status" != "Not Available" ] && [ "$gpu_status" != "Not Detected" ]; then

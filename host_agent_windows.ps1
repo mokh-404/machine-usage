@@ -30,6 +30,39 @@ function Get-CpuUsage {
     }
 }
 
+# Function to get CPU Temperature (Windows Native)
+function Get-CpuTemperature {
+    # Method 1: Performance Counters (Works without Admin)
+    try {
+        $t = Get-WmiObject Win32_PerfFormattedData_Counters_ThermalZoneInformation -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($t -and $t.Temperature -gt 0) {
+            # Temperature is usually in Kelvin
+            $currentTempCelsius = $t.Temperature - 273.15
+            return [math]::Round($currentTempCelsius, 2)
+        }
+    }
+    catch {
+        # Continue to next method
+    }
+
+    # Method 2: MSAcpi_ThermalZoneTemperature (Requires Admin)
+    try {
+        $t = Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace "root/wmi" -ErrorAction SilentlyContinue
+        if ($t) {
+            # Just take the first reading if multiple exist
+            $temp = $t | Select-Object -First 1
+            $currentTempKelvin = $temp.CurrentTemperature / 10
+            $currentTempCelsius = $currentTempKelvin - 273.15
+            return [math]::Round($currentTempCelsius, 2)
+        }
+    }
+    catch {
+        # Continue
+    }
+
+    return 0
+}
+
 # Function to get RAM usage
 function Get-RamUsage {
     try {
@@ -82,19 +115,48 @@ function Get-DiskUsage {
     }
 }
 
-# Function to get LAN IP (IPv4)
-function Get-LanInfo {
+# Function to get Network Details (LAN Speed, WiFi Info)
+function Get-NetworkDetails {
+    $info = @{
+        LanSpeed  = "Not Connected"
+        WifiSpeed = "Not Connected"
+        WifiType  = "Unknown"
+        WifiModel = "Unknown"
+    }
+
     try {
-        # Get the IPv4 address of the interface with a default gateway
-        $ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike "*Loopback*" -and $_.PrefixOrigin -ne "WellKnown" } | Select-Object -First 1).IPAddress
-        if ($null -eq $ip) {
-            return "Unknown"
+        $adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Up" }
+        
+        # WiFi
+        $wifi = $adapters | Where-Object { $_.MediaType -like "*802.11*" -or $_.Name -like "*Wi-Fi*" } | Select-Object -First 1
+        if ($wifi) {
+            $info.WifiSpeed = $wifi.LinkSpeed
+            $info.WifiModel = $wifi.InterfaceDescription
+            # Try to determine type from name/description if MediaType is generic
+            if ($wifi.Name -match "Wi-Fi 6") { $info.WifiType = "Wi-Fi 6" }
+            elseif ($wifi.Name -match "Wi-Fi 5") { $info.WifiType = "Wi-Fi 5" }
+            elseif ($wifi.Name -match "AC") { $info.WifiType = "Wi-Fi 5 (AC)" }
+            elseif ($wifi.Name -match "AX") { $info.WifiType = "Wi-Fi 6 (AX)" }
+            else { $info.WifiType = $wifi.MediaType }
         }
-        return $ip
+
+        # LAN (Wired) - Exclude WiFi and Loopback
+        # We prioritize physical Ethernet if possible, but will take vEthernet if it's the only one active
+        $lan = $adapters | Where-Object { 
+            $_.MediaType -notlike "*802.11*" -and 
+            $_.Name -notlike "*Wi-Fi*" -and 
+            $_.InterfaceDescription -notlike "*Loopback*" 
+        } | Sort-Object LinkSpeed -Descending | Select-Object -First 1
+        
+        if ($lan) {
+            $info.LanSpeed = $lan.LinkSpeed
+        }
     }
     catch {
-        return "Unknown"
+        # Keep defaults
     }
+
+    return $info
 }
 
 # Function to get Network usage
@@ -119,14 +181,25 @@ function Write-MetricsWithRetry {
     $maxRetries = 5
     $retryDelayMs = 100
     
+    # Use a temp file for atomic write
+    $tempFile = "$Path.tmp"
+    
     for ($i = 0; $i -lt $maxRetries; $i++) {
         try {
-            $Content | Set-Content -Path $Path -Force -ErrorAction Stop
+            # Write to temp file first
+            $Content | Set-Content -Path $tempFile -Force -ErrorAction Stop
+            
+            # Move temp file to actual file (atomic operation)
+            Move-Item -Path $tempFile -Destination $Path -Force -ErrorAction Stop
             return $true
         }
         catch {
             if ($i -eq $maxRetries - 1) {
-                throw $_
+                # Clean up temp file if it exists
+                if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
+                # Log error but don't throw to keep agent running
+                Write-Host "Error writing metrics: $_" -ForegroundColor Red
+                return $false
             }
             Start-Sleep -Milliseconds $retryDelayMs
         }
@@ -370,18 +443,20 @@ while ($true) {
         
         # Collect metrics
         $cpuPercent = Get-CpuUsage
-        $ram = Get-RamUsage
+        $cpuTemp = Get-CpuTemperature
         $ram = Get-RamUsage
         $disk = Get-DiskUsage
         $netKb = Get-NetworkUsage
-        $lanInfo = Get-LanInfo
+        $netDetails = Get-NetworkDetails
         $gpu = Get-GpuInfo
         
         # Build JSON object
         $metrics = @{
             timestamp = $timestamp
             cpu       = @{
-                percent = $cpuPercent
+                percent        = $cpuPercent
+                temperature_c  = $cpuTemp
+                cpu_model_name = (Get-CimInstance Win32_Processor).Name
             }
             ram       = @{
                 total_gb = $ram.Total
@@ -397,9 +472,10 @@ while ($true) {
             }
             network   = @{
                 total_kb_sec = $netKb
-            }
-            lan       = @{
-                ip_address = $lanInfo
+                lan_speed    = $netDetails.LanSpeed
+                wifi_speed   = $netDetails.WifiSpeed
+                wifi_type    = $netDetails.WifiType
+                wifi_model   = $netDetails.WifiModel
             }
             gpu       = @{
                 vendor            = $gpu.Vendor
@@ -436,11 +512,14 @@ while ($true) {
             $gpuInfo += " Pwr: $($gpu.PowerW)W"
         }
         # Fan speed removed from console as requested
-        Write-Host "[$timestamp] CPU: $cpuPercent% | RAM: $($ram.Used)GB/$($ram.Total)GB | Disk: $($disk.Used)GB/$($disk.Total)GB | Net: ${netKb}KB/s | LAN: $lanInfo | GPU: $gpuInfo" -ForegroundColor Gray
+        # Fan speed removed from console as requested
+        $cpuModel = (Get-CimInstance Win32_Processor).Name
+        Write-Host "[$timestamp] CPU: $cpuModel | $cpuPercent% (${cpuTemp}C) | RAM: $($ram.Used)GB/$($ram.Total)GB | Disk: $($disk.Used)GB/$($disk.Total)GB | Net: ${netKb}KB/s | LAN: $($netDetails.LanSpeed) | WiFi: $($netDetails.WifiSpeed) ($($netDetails.WifiType)) | GPU: $gpuInfo" -ForegroundColor Gray
         
     }
     catch {
-        Write-Host "Error collecting metrics: $_" -ForegroundColor Red
+        # Suppress error output to avoid cluttering the console
+        # Write-Host "Error collecting metrics: $_" -ForegroundColor Red
     }
     
     # Dynamic Sleep: Calculate how long to sleep to maintain the interval
