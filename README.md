@@ -13,8 +13,9 @@ This solution uses a **Host-Agent Pattern**:
 ## Features
 
 - ✅ **Real Physical Metrics**: Reports actual CPU, RAM, and Disk usage of the host machine (not Docker VM stats)
+- ✅ **Detailed Hardware Info**: Displays CPU Model Name and Real-Time Temperature
 - ✅ **Cross-Platform**: Works on Windows, Linux, and macOS
-- ✅ **Network & LAN Monitoring**: Real-time network I/O tracking and LAN IP detection
+- ✅ **Network & LAN Monitoring**: Real-time network I/O, LAN Link Speed, and WiFi Speed/Type
 - ✅ **Universal GPU Support**: Automatically detects NVIDIA, AMD, or Intel GPUs
 - ✅ **One-Click Execution**: Single entry point scripts that handle everything
 - ✅ **Error Handling**: Robust error handling for missing drivers or configurations
@@ -89,10 +90,10 @@ The system automatically detects GPU vendors and collects usage statistics:
 
 ## Metrics Collected
 
-- **CPU**: Usage percentage
+- **CPU**: Model Name, Usage percentage, Temperature (°C)
 - **RAM**: Total, Used, Free (GB) and percentage
 - **Disk**: Total, Used, Free (GB) and percentage
-- **Network**: Total I/O (KB/s) and LAN IP Address
+- **Network**: Total I/O (KB/s), LAN Link Speed, WiFi Speed, WiFi Type (e.g., 802.11ax)
 - **GPU**: Vendor, Model, Usage percentage, Memory usage, Temperature, Power Usage (W), Fan Speed (%), Status
 
 ## Troubleshooting
