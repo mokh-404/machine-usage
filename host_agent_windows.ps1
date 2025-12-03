@@ -92,26 +92,76 @@ function Get-RamUsage {
 # Function to get Disk usage
 function Get-DiskUsage {
     try {
-        $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
-        $totalGB = [math]::Round($disk.Size / 1GB, 2)
-        $freeGB = [math]::Round($disk.FreeSpace / 1GB, 2)
-        $usedGB = [math]::Round($totalGB - $freeGB, 2)
-        $percent = [math]::Round(($usedGB / $totalGB) * 100, 2)
+        # Get all local disks (DriveType=3)
+        $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
+        $diskData = @()
         
-        return @{
-            Total   = $totalGB
-            Used    = $usedGB
-            Free    = $freeGB
-            Percent = $percent
+        foreach ($d in $disks) {
+            $totalGB = [math]::Round($d.Size / 1GB, 2)
+            $freeGB = [math]::Round($d.FreeSpace / 1GB, 2)
+            $usedGB = [math]::Round($totalGB - $freeGB, 2)
+            
+            $percent = 0
+            if ($totalGB -gt 0) {
+                $percent = [math]::Round(($usedGB / $totalGB) * 100, 2)
+            }
+            
+            # Determine Disk Type (SSD/HDD)
+            $type = "Unknown"
+            try {
+                $driveLetter = $d.DeviceID.TrimEnd(':')
+                $partition = Get-Partition -DriveLetter $driveLetter -ErrorAction SilentlyContinue
+                if ($partition) {
+                    $diskObj = Get-Disk -Number $partition.DiskNumber -ErrorAction SilentlyContinue
+                    if ($diskObj) {
+                        # Get-PhysicalDisk might return multiple for RAID/Storage Spaces, take the first unique type
+                        $physDisks = $diskObj | Get-PhysicalDisk -ErrorAction SilentlyContinue
+                        $mediaTypes = $physDisks.MediaType | Select-Object -Unique
+                        if ($mediaTypes -contains "SSD") { $type = "SSD" }
+                        elseif ($mediaTypes -contains "HDD") { $type = "HDD" }
+                        elseif ($mediaTypes -contains "Unspecified") { $type = "Unspecified" }
+                    }
+                }
+            }
+            catch {
+                # Fallback or permission issue
+            }
+            
+            $diskData += @{
+                Name    = $d.DeviceID
+                Total   = $totalGB
+                Used    = $usedGB
+                Free    = $freeGB
+                Percent = $percent
+                Type    = $type
+            }
         }
+        
+        return $diskData
     }
     catch {
-        return @{
-            Total   = 0
-            Used    = 0
-            Free    = 0
-            Percent = 0
+        return @()
+    }
+}
+
+
+# Function to get SMART Status
+function Get-SmartStatus {
+    try {
+        $disks = Get-PhysicalDisk | Select-Object FriendlyName, HealthStatus
+        $unhealthy = $disks | Where-Object { $_.HealthStatus -ne "Healthy" }
+        $count = $disks.Count
+        
+        if ($unhealthy) {
+            $status = "Warning ($($unhealthy.Count) Unhealthy)"
         }
+        else {
+            $status = "Healthy ($count Drives)"
+        }
+        return $status
+    }
+    catch {
+        return "Unknown"
     }
 }
 
@@ -268,7 +318,7 @@ function Get-GpuInfo {
             }
             catch {
                 # Fallback to simple execution
-                $nvidiaOutput = & $nvidiaSmiPath --query-gpu=name, utilization.gpu, memory.used, memory.total, temperature.gpu, power.draw, fan.speed --format=csv, noheader, nounits 2>$null
+                $nvidiaOutput = & $nvidiaSmiPath --query-gpu = name, utilization.gpu, memory.used, memory.total, temperature.gpu, power.draw, fan.speed --format = csv, noheader, nounits 2>$null
             }
             
             if ($nvidiaOutput -and $nvidiaOutput.Trim() -ne "") {
@@ -357,7 +407,7 @@ function Get-GpuInfo {
         # Try amd-smi (AMD's equivalent to nvidia-smi)
         $amdSmi = Get-Command amd-smi -ErrorAction SilentlyContinue
         if ($amdSmi) {
-            $amdOutput = amd-smi --query-gpu=name, utilization.gpu, memory.used, memory.total, temperature.gpu --format=csv, noheader, nounits 2>$null
+            $amdOutput = amd-smi --query-gpu = name, utilization.gpu, memory.used, memory.total, temperature.gpu --format = csv, noheader, nounits 2>$null
             if ($amdOutput -and $amdOutput.Trim() -ne "") {
                 $parts = $amdOutput -split ','
                 if ($parts.Count -ge 5) {
@@ -434,6 +484,65 @@ function Get-GpuInfo {
     return $gpuInfo
 }
 
+# Function to write historical data to CSV
+function Write-History {
+    param (
+        [string]$Timestamp,
+        [double]$Cpu,
+        [double]$CpuTemp,
+        [object]$Ram,
+        [array]$Disks,
+        [double]$Net,
+        [string]$LanSpeed,
+        [string]$WifiSpeed,
+        [object]$Gpu
+    )
+    
+    $HistoryFile = Join-Path $MetricsDir "history.csv"
+    $MaxLines = 1440 # Approx 1 hour at 2s interval
+    
+    # Calculate aggregated disk stats
+    $totalDiskUsed = 0
+    $totalDiskSize = 0
+    foreach ($d in $Disks) {
+        $totalDiskUsed += $d.Used
+        $totalDiskSize += $d.Total
+    }
+    
+    $diskPercent = 0
+    if ($totalDiskSize -gt 0) {
+        $diskPercent = [math]::Round(($totalDiskUsed / $totalDiskSize) * 100, 2)
+    }
+    
+    # Prepare CSV line
+    # Columns: Timestamp,CPU_%,CPU_Temp,RAM_%,RAM_Used,RAM_Total,Disk_%,Disk_Used,Disk_Total,Net_KB_s,LAN_Speed,WiFi_Speed,GPU_%,GPU_Temp,GPU_Mem_Used,GPU_Mem_Total
+    $line = "$Timestamp,$Cpu,$CpuTemp,$($Ram.Percent),$($Ram.Used),$($Ram.Total),$diskPercent,$totalDiskUsed,$totalDiskSize,$Net,$LanSpeed,$WifiSpeed,$($Gpu.Usage),$($Gpu.Temperature),$($Gpu.MemoryUsed),$($Gpu.MemoryTotal)"
+    
+    try {
+        # Create header if file doesn't exist
+        if (-not (Test-Path $HistoryFile)) {
+            "Timestamp,CPU_%,CPU_Temp,RAM_%,RAM_Used,RAM_Total,Disk_%,Disk_Used,Disk_Total,Net_KB_s,LAN_Speed,WiFi_Speed,GPU_%,GPU_Temp,GPU_Mem_Used,GPU_Mem_Total" | Out-File -FilePath $HistoryFile -Encoding ascii
+        }
+        
+        # Append new line
+        $line | Out-File -FilePath $HistoryFile -Append -Encoding ascii
+        
+        # Rotate file if too large (simple check every 10 updates to save I/O)
+        if ((Get-Random -Minimum 0 -Maximum 10) -eq 0) {
+            $content = Get-Content $HistoryFile
+            if ($content.Count -gt $MaxLines) {
+                $header = $content[0]
+                $keep = $content | Select-Object -Last $MaxLines
+                $newContent = @($header) + $keep
+                $newContent | Out-File -FilePath $HistoryFile -Encoding ascii
+            }
+        }
+    }
+    catch {
+        # Ignore history write errors
+    }
+}
+
 # Main loop
 $ErrorActionPreference = "SilentlyContinue"
 while ($true) {
@@ -446,6 +555,7 @@ while ($true) {
         $cpuTemp = Get-CpuTemperature
         $ram = Get-RamUsage
         $disk = Get-DiskUsage
+        $smartStatus = Get-SmartStatus
         $netKb = Get-NetworkUsage
         $netDetails = Get-NetworkDetails
         $gpu = Get-GpuInfo
@@ -465,10 +575,8 @@ while ($true) {
                 percent  = $ram.Percent
             }
             disk      = @{
-                total_gb = $disk.Total
-                used_gb  = $disk.Used
-                free_gb  = $disk.Free
-                percent  = $disk.Percent
+                drives       = $disk
+                smart_status = $smartStatus
             }
             network   = @{
                 total_kb_sec = $netKb
@@ -493,8 +601,10 @@ while ($true) {
         $json = $metrics | ConvertTo-Json -Depth 5 -Compress
         
         # Write to file with retry
-        # Write to file with retry
         Write-MetricsWithRetry -Path $metricsFile -Content $json | Out-Null
+        
+        # Write History
+        Write-History -Timestamp $timestamp -Cpu $cpuPercent -CpuTemp $cpuTemp -Ram $ram -Disks $disk -Net $netKb -LanSpeed $netDetails.LanSpeed -WifiSpeed $netDetails.WifiSpeed -Gpu $gpu
         
         # Optional: Write status to console (can be hidden)
         $gpuInfo = "$($gpu.Vendor) $($gpu.Model)"
@@ -511,21 +621,22 @@ while ($true) {
         if ($gpu.PowerW -gt 0) {
             $gpuInfo += " Pwr: $($gpu.PowerW)W"
         }
-        # Fan speed removed from console as requested
-        # Fan speed removed from console as requested
+
+        # Format disk info for console
+        $diskInfo = ($disk | ForEach-Object { "$($_.Name) [$($_.Type)] $($_.Used)GB/$($_.Total)GB" }) -join " "
+
         $cpuModel = (Get-CimInstance Win32_Processor).Name
-        Write-Host "[$timestamp] CPU: $cpuModel | $cpuPercent% (${cpuTemp}C) | RAM: $($ram.Used)GB/$($ram.Total)GB | Disk: $($disk.Used)GB/$($disk.Total)GB | Net: ${netKb}KB/s | LAN: $($netDetails.LanSpeed) | WiFi: $($netDetails.WifiSpeed) ($($netDetails.WifiType)) | GPU: $gpuInfo" -ForegroundColor Gray
-        
+        Write-Host "[$timestamp] CPU: $cpuModel | $cpuPercent% (${cpuTemp}C) | RAM: $($ram.Used)GB/$($ram.Total)GB | Disk: $diskInfo [$smartStatus] | Net: ${netKb}KB/s | LAN: $($netDetails.LanSpeed) | WiFi: $($netDetails.WifiSpeed) ($($netDetails.WifiType)) | GPU: $gpuInfo" -ForegroundColor Gray
+
     }
     catch {
-        # Suppress error output to avoid cluttering the console
-        # Write-Host "Error collecting metrics: $_" -ForegroundColor Red
+        # Suppress error output
     }
-    
+
     # Dynamic Sleep: Calculate how long to sleep to maintain the interval
     $elapsed = (Get-Date) - $loopStartTime
     $sleepSeconds = $Interval - $elapsed.TotalSeconds
-    
+
     if ($sleepSeconds -gt 0) {
         Start-Sleep -Seconds $sleepSeconds
     }

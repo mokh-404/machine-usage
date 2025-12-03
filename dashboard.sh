@@ -61,6 +61,9 @@ parse_json() {
             ".disk.percent")
                 grep -o '"percent":[0-9.]*' "$json_file" | tail -1 | cut -d':' -f2
                 ;;
+            ".disk.smart_status")
+                grep -o '"smart_status":"[^"]*"' "$json_file" | cut -d'"' -f4
+                ;;
             ".gpu.vendor")
                 grep -o '"vendor":"[^"]*"' "$json_file" | cut -d'"' -f4
                 ;;
@@ -143,15 +146,14 @@ create_progress_bar() {
 }
 
 # Function to display dashboard using whiptail
+# Function to display dashboard using whiptail
 show_dashboard() {
     local cpu=$(format_value "$(parse_json "$METRICS_FILE" ".cpu.percent")" "0")
     local cpu_temp=$(format_value "$(parse_json "$METRICS_FILE" ".cpu.temperature_c")" "0")
     local ram_total=$(format_value "$(parse_json "$METRICS_FILE" ".ram.total_gb")" "0")
     local ram_used=$(format_value "$(parse_json "$METRICS_FILE" ".ram.used_gb")" "0")
     local ram_percent=$(format_value "$(parse_json "$METRICS_FILE" ".ram.percent")" "0")
-    local disk_total=$(format_value "$(parse_json "$METRICS_FILE" ".disk.total_gb")" "0")
-    local disk_used=$(format_value "$(parse_json "$METRICS_FILE" ".disk.used_gb")" "0")
-    local disk_percent=$(format_value "$(parse_json "$METRICS_FILE" ".disk.percent")" "0")
+    local smart_status=$(format_value "$(parse_json "$METRICS_FILE" ".disk.smart_status")" "Unknown")
     local gpu_vendor=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.vendor")" "Unknown")
     local gpu_model=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.model")" "Not Detected")
     local gpu_usage=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.usage_percent")" "0")
@@ -169,7 +171,6 @@ show_dashboard() {
     # Convert to integers for progress bars
     local cpu_int=$(get_int "$cpu")
     local ram_int=$(get_int "$ram_percent")
-    local disk_int=$(get_int "$disk_percent")
     local gpu_int=$(get_int "$gpu_usage")
     
     # Build info text with progress bars
@@ -177,7 +178,17 @@ show_dashboard() {
     info_text+="═══════════════════════════════════════════════════════\n"
     info_text+="     SYSTEM MONITORING DASHBOARD\n"
     info_text+="═══════════════════════════════════════════════════════\n\n"
-    info_text+="Last Update: $timestamp\n\n"
+    info_text+="Last Update: $timestamp\n"
+    
+    # History check
+    local history_file="${METRICS_FILE%/*}/history.csv"
+    local history_count=0
+    if [ -f "$history_file" ]; then
+        history_count=$(wc -l < "$history_file")
+        # Subtract header
+        if [ "$history_count" -gt 0 ]; then history_count=$((history_count - 1)); fi
+    fi
+    info_text+="History Points: $history_count\n\n"
     
     local cpu_model=$(format_value "$(parse_json "$METRICS_FILE" ".cpu.model")" "Unknown CPU")
     info_text+="CPU: $cpu_model\n"
@@ -185,8 +196,50 @@ show_dashboard() {
     info_text+="$(create_progress_bar $cpu_int)\n\n"
     info_text+="RAM: ${ram_used} GB / ${ram_total} GB (${ram_percent}%)\n"
     info_text+="$(create_progress_bar $ram_int)\n\n"
-    info_text+="Disk: ${disk_used} GB / ${disk_total} GB (${disk_percent}%)\n"
-    info_text+="$(create_progress_bar $disk_int)\n\n"
+    
+    # Disk Section (Multi-Disk)
+    info_text+="Disks (SMART: $smart_status):\n"
+    
+    # Extract disk info
+    # We need to handle array parsing carefully without jq if possible, but assuming jq is available for complex structures
+    # or using grep hack for now
+    if command -v jq &> /dev/null; then
+        # Use jq to iterate
+        local drive_count=$(jq '.disk.drives | length' "$METRICS_FILE" 2>/dev/null)
+        if [ -z "$drive_count" ]; then drive_count=0; fi
+        
+        for ((i=0; i<drive_count; i++)); do
+            local name=$(jq -r ".disk.drives[$i].Name" "$METRICS_FILE")
+            local used=$(jq -r ".disk.drives[$i].Used" "$METRICS_FILE")
+            local total=$(jq -r ".disk.drives[$i].Total" "$METRICS_FILE")
+            local percent=$(jq -r ".disk.drives[$i].Percent" "$METRICS_FILE")
+            local percent_int=$(get_int "$percent")
+            
+            info_text+="$name ${used}GB/${total}GB ($percent%)\n"
+            info_text+="$(create_progress_bar $percent_int)\n"
+        done
+    else
+        # Fallback using grep/cut for simple array extraction (assumes compressed JSON)
+        # This is a bit fragile but works for the specific format
+        local names=$(grep -o '"Name":"[^"]*"' "$METRICS_FILE" | cut -d'"' -f4)
+        local useds=$(grep -o '"Used":[0-9.]*' "$METRICS_FILE" | cut -d':' -f2)
+        local totals=$(grep -o '"Total":[0-9.]*' "$METRICS_FILE" | cut -d':' -f2)
+        local percents=$(grep -o '"Percent":[0-9.]*' "$METRICS_FILE" | cut -d':' -f2)
+        
+        # Convert to arrays
+        IFS=$'\n' read -rd '' -a name_arr <<< "$names"
+        IFS=$'\n' read -rd '' -a used_arr <<< "$useds"
+        IFS=$'\n' read -rd '' -a total_arr <<< "$totals"
+        IFS=$'\n' read -rd '' -a percent_arr <<< "$percents"
+        
+        for ((i=0; i<${#name_arr[@]}; i++)); do
+            local percent_int=$(get_int "${percent_arr[$i]}")
+            info_text+="${name_arr[$i]} ${used_arr[$i]}GB/${total_arr[$i]}GB (${percent_arr[$i]}%)\n"
+            info_text+="$(create_progress_bar $percent_int)\n"
+        done
+    fi
+    info_text+="\n"
+
     info_text+="Network I/O: ${net_kb} KB/s\n"
     info_text+="LAN Speed: ${lan_speed}\n"
     if [ "$wifi_speed" != "Not Connected" ]; then
@@ -236,6 +289,7 @@ show_text_dashboard() {
     local disk_total=$(format_value "$(parse_json "$METRICS_FILE" ".disk.total_gb")" "0")
     local disk_used=$(format_value "$(parse_json "$METRICS_FILE" ".disk.used_gb")" "0")
     local disk_percent=$(format_value "$(parse_json "$METRICS_FILE" ".disk.percent")" "0")
+    local smart_status=$(format_value "$(parse_json "$METRICS_FILE" ".disk.smart_status")" "Unknown")
     local gpu_vendor=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.vendor")" "Unknown")
     local gpu_model=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.model")" "Not Detected")
     local gpu_usage=$(format_value "$(parse_json "$METRICS_FILE" ".gpu.usage_percent")" "0")
@@ -248,10 +302,18 @@ show_text_dashboard() {
     
     local cpu_int=$(get_int "$cpu")
     local ram_int=$(get_int "$ram_percent")
-    local disk_int=$(get_int "$disk_percent")
     local gpu_int=$(get_int "$gpu_usage")
     
     echo "Last Update: $timestamp"
+    
+    # History check
+    local history_file="${METRICS_FILE%/*}/history.csv"
+    local history_count=0
+    if [ -f "$history_file" ]; then
+        history_count=$(wc -l < "$history_file")
+        if [ "$history_count" -gt 0 ]; then history_count=$((history_count - 1)); fi
+    fi
+    echo "History Points: $history_count"
     echo ""
     local cpu_model=$(format_value "$(parse_json "$METRICS_FILE" ".cpu.model")" "Unknown CPU")
     echo "CPU:        $cpu_model"
@@ -261,8 +323,40 @@ show_text_dashboard() {
     echo -e "RAM Usage:  ${BLUE}${ram_used} GB / ${ram_total} GB${NC} (${ram_percent}%)"
     echo "$(create_progress_bar $ram_int)"
     echo ""
-    echo -e "Disk Usage: ${YELLOW}${disk_used} GB / ${disk_total} GB${NC} (${disk_percent}%)"
-    echo "$(create_progress_bar $disk_int)"
+    echo "Disks (SMART: $smart_status):"
+    
+    # Extract disk info (same logic as above)
+    if command -v jq &> /dev/null; then
+        local drive_count=$(jq '.disk.drives | length' "$METRICS_FILE" 2>/dev/null)
+        if [ -z "$drive_count" ]; then drive_count=0; fi
+        
+        for ((i=0; i<drive_count; i++)); do
+            local name=$(jq -r ".disk.drives[$i].Name" "$METRICS_FILE")
+            local used=$(jq -r ".disk.drives[$i].Used" "$METRICS_FILE")
+            local total=$(jq -r ".disk.drives[$i].Total" "$METRICS_FILE")
+            local percent=$(jq -r ".disk.drives[$i].Percent" "$METRICS_FILE")
+            local percent_int=$(get_int "$percent")
+            
+            echo -e "${YELLOW}${name} ${used}GB/${total}GB${NC} (${percent}%)"
+            echo "$(create_progress_bar $percent_int)"
+        done
+    else
+        local names=$(grep -o '"Name":"[^"]*"' "$METRICS_FILE" | cut -d'"' -f4)
+        local useds=$(grep -o '"Used":[0-9.]*' "$METRICS_FILE" | cut -d':' -f2)
+        local totals=$(grep -o '"Total":[0-9.]*' "$METRICS_FILE" | cut -d':' -f2)
+        local percents=$(grep -o '"Percent":[0-9.]*' "$METRICS_FILE" | cut -d':' -f2)
+        
+        IFS=$'\n' read -rd '' -a name_arr <<< "$names"
+        IFS=$'\n' read -rd '' -a used_arr <<< "$useds"
+        IFS=$'\n' read -rd '' -a total_arr <<< "$totals"
+        IFS=$'\n' read -rd '' -a percent_arr <<< "$percents"
+        
+        for ((i=0; i<${#name_arr[@]}; i++)); do
+            local percent_int=$(get_int "${percent_arr[$i]}")
+            echo -e "${YELLOW}${name_arr[$i]} ${used_arr[$i]}GB/${total_arr[$i]}GB${NC} (${percent_arr[$i]}%)"
+            echo "$(create_progress_bar $percent_int)"
+        done
+    fi
     echo ""
     echo -e "Network I/O: ${net_kb} KB/s"
     echo -e "LAN Speed:   ${lan_speed}"

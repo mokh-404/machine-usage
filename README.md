@@ -13,6 +13,9 @@ This solution uses a **Host-Agent Pattern**:
 ## Features
 
 - ✅ **Real Physical Metrics**: Reports actual CPU, RAM, and Disk usage of the host machine (not Docker VM stats)
+- ✅ **Multi-Disk Support**: Monitors all mounted logical drives (C:, D:, /home, etc.)
+- ✅ **Disk Type Detection**: Identifies whether drives are SSD or HDD (Windows 8+ / Linux)
+- ✅ **SMART Health Monitoring**: Checks physical disk health status (Requires `smartmontools` on Linux/macOS)
 - ✅ **Detailed Hardware Info**: Displays CPU Model Name and Real-Time Temperature
 - ✅ **Cross-Platform**: Works on Windows, Linux, and macOS
 - ✅ **Network & LAN Monitoring**: Real-time network I/O, LAN Link Speed, and WiFi Speed/Type
@@ -26,6 +29,7 @@ This solution uses a **Host-Agent Pattern**:
 - **Docker** (Docker Desktop for Windows/macOS, Docker Engine for Linux)
 - **PowerShell** (Windows - usually pre-installed)
 - **Bash** (Linux/macOS - usually pre-installed)
+- **smartmontools** (Linux/macOS - required for SMART status)
 - **bc** (Unix systems - usually pre-installed, fallback to awk if not available)
 
 ## Quick Start
@@ -92,7 +96,7 @@ The system automatically detects GPU vendors and collects usage statistics:
 
 - **CPU**: Model Name, Usage percentage, Temperature (°C)
 - **RAM**: Total, Used, Free (GB) and percentage
-- **Disk**: Total, Used, Free (GB) and percentage
+- **Disk**: Usage (Used/Total/Free/Percent) for all mounted drives, Disk Type (SSD/HDD), and SMART Health Status
 - **Network**: Total I/O (KB/s), LAN Link Speed, WiFi Speed, WiFi Type (e.g., 802.11ax)
 - **GPU**: Vendor, Model, Usage percentage, Memory usage, Temperature, Power Usage (W), Fan Speed (%), Status
 
@@ -111,6 +115,11 @@ The system automatically detects GPU vendors and collects usage statistics:
 - Install appropriate GPU drivers
 - For NVIDIA: Ensure `nvidia-smi` is available
 - The system will gracefully handle missing GPU drivers
+
+### SMART Status Unknown (Linux/macOS)
+- Install `smartmontools` to enable disk health monitoring:
+  - Linux: `sudo apt-get install smartmontools`
+  - macOS: `brew install smartmontools`
 
 ### GPU shows model but no usage readings
 This is normal in certain scenarios:

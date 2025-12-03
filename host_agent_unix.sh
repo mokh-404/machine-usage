@@ -147,25 +147,117 @@ get_ram_usage() {
 }
 
 # Function to get Disk usage
+# Function to get Disk usage (Multi-disk)
+# Function to get Disk usage (Multi-disk)
 get_disk_usage() {
+    local drives=""
     if [[ "$OS_TYPE" == "Linux" ]]; then
-        # Linux: Use df for root filesystem
-        local df_output=$(df -BG / | tail -1)
-        local total_gb=$(echo "$df_output" | awk '{print $2}' | sed 's/G//')
-        local used_gb=$(echo "$df_output" | awk '{print $3}' | sed 's/G//')
-        local free_gb=$(echo "$df_output" | awk '{print $4}' | sed 's/G//')
-        local percent=$(echo "$df_output" | awk '{print $5}' | sed 's/%//')
-        echo "$used_gb|$total_gb|$free_gb|$percent"
+        # Linux: Use df, exclude pseudo-filesystems
+        # Output format: Size Used Avail Use% Mounted
+        # We use -P for portability (no line breaks) and -B G for Gigabytes
+        while read -r line; do
+            local total=$(echo "$line" | awk '{print $2}' | sed 's/G//')
+            local used=$(echo "$line" | awk '{print $3}' | sed 's/G//')
+            local free=$(echo "$line" | awk '{print $4}' | sed 's/G//')
+            local percent=$(echo "$line" | awk '{print $5}' | sed 's/%//')
+            local mount=$(echo "$line" | awk '{print $6}')
+            local device=$(echo "$line" | awk '{print $1}')
+            
+            # Determine Disk Type (SSD/HDD)
+            local type="Unknown"
+            
+            # Try to resolve device to block name (e.g., /dev/sda1 -> sda)
+            if [[ "$device" == "/dev/"* ]]; then
+                local dev_name=$(basename "$device")
+                # Remove partition digits (sda1 -> sda, nvme0n1p1 -> nvme0n1)
+                local parent_dev=$(lsblk -no pkname "/dev/$dev_name" 2>/dev/null)
+                if [ -z "$parent_dev" ]; then
+                     # Fallback regex if lsblk fails or returns empty
+                     parent_dev=$(echo "$dev_name" | sed 's/[0-9]*$//')
+                fi
+                
+                # Check rotational status in /sys/block
+                if [ -f "/sys/block/$parent_dev/queue/rotational" ]; then
+                    local rota=$(cat "/sys/block/$parent_dev/queue/rotational")
+                    if [ "$rota" -eq 0 ]; then
+                        type="SSD"
+                    elif [ "$rota" -eq 1 ]; then
+                        type="HDD"
+                    fi
+                elif [ -f "/sys/block/$dev_name/queue/rotational" ]; then
+                     # Sometimes the partition itself might be listed (rare)
+                    local rota=$(cat "/sys/block/$dev_name/queue/rotational")
+                    if [ "$rota" -eq 0 ]; then
+                        type="SSD"
+                    elif [ "$rota" -eq 1 ]; then
+                        type="HDD"
+                    fi
+                else
+                    # Fallback to lsblk
+                    local rota=$(lsblk -d -o rota "/dev/$parent_dev" 2>/dev/null | tail -1)
+                    if [ "$rota" == "0" ]; then
+                        type="SSD"
+                    elif [ "$rota" == "1" ]; then
+                        type="HDD"
+                    fi
+                fi
+            fi
+            
+            if [ -n "$drives" ]; then drives="${drives};"; fi
+            drives="${drives}${mount},${used},${total},${percent},${type}"
+        done < <(df -BG -P | grep -vE '^Filesystem|tmpfs|devtmpfs|overlay|none|udev|run|shm')
     elif [[ "$OS_TYPE" == "macOS" ]]; then
-        # macOS: Use df for root filesystem
-        local df_output=$(df -g / | tail -1)
-        local total_gb=$(echo "$df_output" | awk '{print $2}')
-        local used_gb=$(echo "$df_output" | awk '{print $3}')
-        local free_gb=$(echo "$df_output" | awk '{print $4}')
-        local percent=$(calc "($used_gb / $total_gb) * 100")
-        echo "$used_gb|$total_gb|$free_gb|$percent"
+        # macOS
+        while read -r line; do
+            local total=$(echo "$line" | awk '{print $2}' | sed 's/Gi//')
+            local used=$(echo "$line" | awk '{print $3}' | sed 's/Gi//')
+            local free=$(echo "$line" | awk '{print $4}' | sed 's/Gi//')
+            local percent=$(echo "$line" | awk '{print $5}' | sed 's/%//')
+            local mount=$(echo "$line" | awk '{print $9}')
+            
+            # macOS disk type detection is complex, defaulting to SSD for now as most Macs are SSD
+            local type="SSD"
+            # Attempt to check system_profiler (slow, so maybe skip or cache)
+            # For now, we'll leave it as "SSD" or "Unknown" to match Windows "Unknown" fallback
+            
+            if [ -n "$drives" ]; then drives="${drives};"; fi
+            drives="${drives}${mount},${used},${total},${percent},${type}"
+        done < <(df -g | grep -vE '^Filesystem|devfs|map|com.apple')
+    fi
+    echo "$drives"
+}
+
+# Function to get SMART Status
+get_smart_status() {
+    if ! command -v smartctl &> /dev/null; then
+        echo "Unknown (smartctl missing)"
+        return
+    fi
+    
+    local healthy_count=0
+    local unhealthy_count=0
+    
+    # Scan for devices (requires permissions, might fail if not root)
+    local devices=$(smartctl --scan 2>/dev/null | awk '{print $1}')
+    
+    if [ -z "$devices" ]; then
+        echo "Unknown (No devices found/Permission denied)"
+        return
+    fi
+    
+    for dev in $devices; do
+        local health=$(smartctl -H "$dev" 2>/dev/null | grep "result" | awk '{print $NF}')
+        if [ "$health" == "PASSED" ] || [ "$health" == "OK" ]; then
+            ((healthy_count++))
+        else
+            ((unhealthy_count++))
+        fi
+    done
+    
+    if [ $unhealthy_count -gt 0 ]; then
+        echo "Warning ($unhealthy_count Unhealthy)"
     else
-        echo "0|0|0|0"
+        echo "Healthy ($healthy_count Drives)"
     fi
 }
 
@@ -453,7 +545,7 @@ get_gpu_info() {
     echo "$vendor|$model|$usage|$memory_used|$memory_total|$temperature|$status"
 }
 
-# Function to create JSON (simple JSON creation without jq dependency)
+# Function to create JSON
 create_json() {
     local timestamp="$1"
     local cpu="$2"
@@ -463,26 +555,95 @@ create_json() {
     local ram_total="$6"
     local ram_free="$7"
     local ram_percent="$8"
-    local disk_used="$9"
-    local disk_total="${10}"
-    local disk_free="${11}"
-    local disk_percent="${12}"
-    local gpu_vendor="${13}"
-    local gpu_model="${14}"
-    local gpu_usage="${15}"
-    local gpu_mem_used="${16}"
-    local gpu_mem_total="${17}"
-    local gpu_temp="${18}"
-    local gpu_status="${19}"
-    local net_kb="${20}"
-    local lan_speed="${21}"
-    local wifi_speed="${22}"
-    local wifi_type="${23}"
-    local wifi_model="${24}"
+    local disk_str="$9"
+    local smart_status="${10}"
+    local gpu_vendor="${11}"
+    local gpu_model="${12}"
+    local gpu_usage="${13}"
+    local gpu_mem_used="${14}"
+    local gpu_mem_total="${15}"
+    local gpu_temp="${16}"
+    local gpu_status="${17}"
+    local net_kb="${18}"
+    local lan_speed="${19}"
+    local wifi_speed="${20}"
+    local wifi_type="${21}"
+    local wifi_model="${22}"
+    
+    # Construct drives JSON array
+    local drives_json="["
+    IFS=';' read -ra ADDR <<< "$disk_str"
+    for i in "${!ADDR[@]}"; do
+        IFS=',' read -r name used total percent type <<< "${ADDR[$i]}"
+        if [ "$i" -gt 0 ]; then drives_json="${drives_json},"; fi
+        drives_json="${drives_json}{\"Name\":\"$name\",\"Used\":$used,\"Total\":$total,\"Percent\":$percent,\"Type\":\"${type:-Unknown}\"}"
+    done
+    drives_json="${drives_json}]"
     
     cat <<EOF
-{"timestamp":"$timestamp","cpu":{"percent":$cpu,"temperature_c":$cpu_temp,"cpu_model_name":"$cpu_model"},"ram":{"total_gb":$ram_total,"used_gb":$ram_used,"free_gb":$ram_free,"percent":$ram_percent},"disk":{"total_gb":$disk_total,"used_gb":$disk_used,"free_gb":$disk_free,"percent":$disk_percent},"network":{"total_kb_sec":$net_kb,"lan_speed":"$lan_speed","wifi_speed":"$wifi_speed","wifi_type":"$wifi_type","wifi_model":"$wifi_model"},"gpu":{"vendor":"$gpu_vendor","model":"$gpu_model","usage_percent":$gpu_usage,"memory_used_gb":$gpu_mem_used,"memory_total_gb":$gpu_mem_total,"temperature_c":$gpu_temp,"status":"$gpu_status"}}
+{"timestamp":"$timestamp","cpu":{"percent":$cpu,"temperature_c":$cpu_temp,"cpu_model_name":"$cpu_model"},"ram":{"total_gb":$ram_total,"used_gb":$ram_used,"free_gb":$ram_free,"percent":$ram_percent},"disk":{"smart_status":"$smart_status","drives":$drives_json},"network":{"total_kb_sec":$net_kb,"lan_speed":"$lan_speed","wifi_speed":"$wifi_speed","wifi_type":"$wifi_type","wifi_model":"$wifi_model"},"gpu":{"vendor":"$gpu_vendor","model":"$gpu_model","usage_percent":$gpu_usage,"memory_used_gb":$gpu_mem_used,"memory_total_gb":$gpu_mem_total,"temperature_c":$gpu_temp,"status":"$gpu_status"}}
 EOF
+}
+
+# Function to write history
+write_history() {
+    local timestamp="$1"
+    local cpu="$2"
+    local cpu_temp="$3"
+    local ram_percent="$4"
+    local ram_used="$5"
+    local ram_total="$6"
+    local disk_str="$7"
+    local net="$8"
+    local lan_speed="$9"
+    local wifi_speed="${10}"
+    local gpu_usage="${11}"
+    local gpu_temp="${12}"
+    local gpu_mem_used="${13}"
+    local gpu_mem_total="${14}"
+    
+    local history_file="${METRICS_DIR}/history.csv"
+    local max_lines=1440
+    
+    # Calculate aggregated disk stats
+    local total_disk_used=0
+    local total_disk_size=0
+    
+    IFS=';' read -ra ADDR <<< "$disk_str"
+    for i in "${!ADDR[@]}"; do
+        IFS=',' read -r name used total percent type <<< "${ADDR[$i]}"
+        # Remove any non-numeric chars
+        used=$(echo "$used" | sed 's/[^0-9.]//g')
+        total=$(echo "$total" | sed 's/[^0-9.]//g')
+        
+        if [ -n "$used" ]; then total_disk_used=$(echo "$total_disk_used + $used" | bc); fi
+        if [ -n "$total" ]; then total_disk_size=$(echo "$total_disk_size + $total" | bc); fi
+    done
+    
+    local disk_percent=0
+    if [ $(echo "$total_disk_size > 0" | bc) -eq 1 ]; then
+        disk_percent=$(echo "scale=2; ($total_disk_used / $total_disk_size) * 100" | bc)
+    fi
+    
+    # Columns: Timestamp,CPU_%,CPU_Temp,RAM_%,RAM_Used,RAM_Total,Disk_%,Disk_Used,Disk_Total,Net_KB_s,LAN_Speed,WiFi_Speed,GPU_%,GPU_Temp,GPU_Mem_Used,GPU_Mem_Total
+    local line="$timestamp,$cpu,$cpu_temp,$ram_percent,$ram_used,$ram_total,$disk_percent,$total_disk_used,$total_disk_size,$net,$lan_speed,$wifi_speed,$gpu_usage,$gpu_temp,$gpu_mem_used,$gpu_mem_total"
+    
+    # Create header if missing
+    if [ ! -f "$history_file" ]; then
+        echo "Timestamp,CPU_%,CPU_Temp,RAM_%,RAM_Used,RAM_Total,Disk_%,Disk_Used,Disk_Total,Net_KB_s,LAN_Speed,WiFi_Speed,GPU_%,GPU_Temp,GPU_Mem_Used,GPU_Mem_Total" > "$history_file"
+    fi
+    
+    # Append line
+    echo "$line" >> "$history_file"
+    
+    # Rotate (keep header + max_lines)
+    local lines=$(wc -l < "$history_file")
+    if [ "$lines" -gt $((max_lines + 100)) ]; then
+        local header=$(head -n 1 "$history_file")
+        local content=$(tail -n "$max_lines" "$history_file")
+        echo "$header" > "$history_file"
+        echo "$content" >> "$history_file"
+    fi
 }
 
 # Main loop
@@ -494,7 +655,8 @@ while true; do
     cpu_temp=$(get_cpu_temp)
     cpu_model=$(get_cpu_model)
     ram_data=$(get_ram_usage)
-    disk_data=$(get_disk_usage)
+    disk_str=$(get_disk_usage)
+    smart_status=$(get_smart_status)
     gpu_data=$(get_gpu_info)
     net_kb=$(get_network_usage)
     net_details=$(get_network_details)
@@ -511,12 +673,6 @@ while true; do
     ram_free=$(echo "$ram_data" | cut -d'|' -f3)
     ram_percent=$(echo "$ram_data" | cut -d'|' -f4)
     
-    # Parse Disk data
-    disk_used=$(echo "$disk_data" | cut -d'|' -f1)
-    disk_total=$(echo "$disk_data" | cut -d'|' -f2)
-    disk_free=$(echo "$disk_data" | cut -d'|' -f3)
-    disk_percent=$(echo "$disk_data" | cut -d'|' -f4)
-    
     # Parse GPU data
     gpu_vendor=$(echo "$gpu_data" | cut -d'|' -f1)
     gpu_model=$(echo "$gpu_data" | cut -d'|' -f2)
@@ -529,7 +685,7 @@ while true; do
     # Create JSON
     json=$(create_json "$timestamp" "$cpu" "$cpu_temp" "$cpu_model" \
                       "$ram_used" "$ram_total" "$ram_free" "$ram_percent" \
-                      "$disk_used" "$disk_total" "$disk_free" "$disk_percent" \
+                      "$disk_str" "$smart_status" \
                       "$gpu_vendor" "$gpu_model" "$gpu_usage" "$gpu_mem_used" "$gpu_mem_total" "$gpu_temp" "$gpu_status" \
                       "$net_kb" "$lan_speed" "$wifi_speed" "$wifi_type" "$wifi_model")
     
@@ -537,8 +693,19 @@ while true; do
     echo "$json" > "${METRICS_FILE}.tmp"
     mv "${METRICS_FILE}.tmp" "$METRICS_FILE"
     
+    # Write History
+    write_history "$timestamp" "$cpu" "$cpu_temp" "$ram_percent" "$ram_used" "$ram_total" "$disk_str" "$net_kb" "$lan_speed" "$wifi_speed" "$gpu_usage" "$gpu_temp" "$gpu_mem_used" "$gpu_mem_total"
+    
+    # Format disk info for console
+    disk_console=""
+    IFS=';' read -ra ADDR <<< "$disk_str"
+    for i in "${!ADDR[@]}"; do
+        IFS=',' read -r name used total percent type <<< "${ADDR[$i]}"
+        disk_console="${disk_console}${name} [${type}] ${used}GB/${total}GB "
+    done
+    
     # Optional: Log to console
-    echo "[$timestamp] CPU: $cpu_model | ${cpu}% (${cpu_temp}C) | RAM: ${ram_used}GB/${ram_total}GB | Disk: ${disk_used}GB/${disk_total}GB | Net: ${net_kb}KB/s | LAN: $lan_speed | WiFi: $wifi_speed | GPU: $gpu_vendor $gpu_model" >&2
+    echo "[$timestamp] CPU: $cpu_model | ${cpu}% (${cpu_temp}C) | RAM: ${ram_used}GB/${ram_total}GB | Disk: $disk_console[$smart_status] | Net: ${net_kb}KB/s | LAN: $lan_speed | WiFi: $wifi_speed | GPU: $gpu_vendor $gpu_model" >&2
     
     sleep "$INTERVAL"
 done
