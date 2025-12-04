@@ -545,6 +545,71 @@ get_gpu_info() {
     echo "$vendor|$model|$usage|$memory_used|$memory_total|$temperature|$status"
 }
 
+# Function to generate alerts
+get_alerts() {
+    local cpu="$1"
+    local cpu_temp="$2"
+    local ram_percent="$3"
+    local disk_str="$4"
+    local smart_status="$5"
+    local gpu_usage="$6"
+    local gpu_temp="$7"
+    
+    local alerts="["
+    local count=0
+    
+    # CPU Alerts
+    if [ $(echo "$cpu > 90" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+        if [ $count -gt 0 ]; then alerts="${alerts},"; fi
+        alerts="${alerts}\"CRITICAL: High CPU Usage (${cpu}%)\""
+        ((count++))
+    fi
+    if [ $(echo "$cpu_temp > 80" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+        if [ $count -gt 0 ]; then alerts="${alerts},"; fi
+        alerts="${alerts}\"CRITICAL: High CPU Temperature (${cpu_temp} C)\""
+        ((count++))
+    fi
+    
+    # RAM Alerts
+    if [ $(echo "$ram_percent > 90" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+        if [ $count -gt 0 ]; then alerts="${alerts},"; fi
+        alerts="${alerts}\"CRITICAL: High RAM Usage (${ram_percent}%)\""
+        ((count++))
+    fi
+    
+    # Disk Alerts
+    IFS=';' read -ra ADDR <<< "$disk_str"
+    for i in "${!ADDR[@]}"; do
+        IFS=',' read -r name used total percent type <<< "${ADDR[$i]}"
+        if [ $(echo "$percent > 90" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+            if [ $count -gt 0 ]; then alerts="${alerts},"; fi
+            alerts="${alerts}\"CRITICAL: Low Disk Space on ${name} (${percent}% Used)\""
+            ((count++))
+        fi
+    done
+    
+    if [[ "$smart_status" == *"Unhealthy"* ]] || [[ "$smart_status" == *"Warning"* ]]; then
+        if [ $count -gt 0 ]; then alerts="${alerts},"; fi
+        alerts="${alerts}\"CRITICAL: Disk SMART Status Warning\""
+        ((count++))
+    fi
+    
+    # GPU Alerts
+    if [ $(echo "$gpu_usage > 90" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+        if [ $count -gt 0 ]; then alerts="${alerts},"; fi
+        alerts="${alerts}\"CRITICAL: High GPU Usage (${gpu_usage}%)\""
+        ((count++))
+    fi
+    if [ $(echo "$gpu_temp > 85" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+        if [ $count -gt 0 ]; then alerts="${alerts},"; fi
+        alerts="${alerts}\"CRITICAL: High GPU Temperature (${gpu_temp} C)\""
+        ((count++))
+    fi
+    
+    alerts="${alerts}]"
+    echo "$alerts"
+}
+
 # Function to create JSON
 create_json() {
     local timestamp="$1"
@@ -569,6 +634,7 @@ create_json() {
     local wifi_speed="${20}"
     local wifi_type="${21}"
     local wifi_model="${22}"
+    local alerts="${23}"
     
     # Construct drives JSON array
     local drives_json="["
@@ -581,7 +647,7 @@ create_json() {
     drives_json="${drives_json}]"
     
     cat <<EOF
-{"timestamp":"$timestamp","cpu":{"percent":$cpu,"temperature_c":$cpu_temp,"cpu_model_name":"$cpu_model"},"ram":{"total_gb":$ram_total,"used_gb":$ram_used,"free_gb":$ram_free,"percent":$ram_percent},"disk":{"smart_status":"$smart_status","drives":$drives_json},"network":{"total_kb_sec":$net_kb,"lan_speed":"$lan_speed","wifi_speed":"$wifi_speed","wifi_type":"$wifi_type","wifi_model":"$wifi_model"},"gpu":{"vendor":"$gpu_vendor","model":"$gpu_model","usage_percent":$gpu_usage,"memory_used_gb":$gpu_mem_used,"memory_total_gb":$gpu_mem_total,"temperature_c":$gpu_temp,"status":"$gpu_status"}}
+{"timestamp":"$timestamp","cpu":{"percent":$cpu,"temperature_c":$cpu_temp,"cpu_model_name":"$cpu_model"},"ram":{"total_gb":$ram_total,"used_gb":$ram_used,"free_gb":$ram_free,"percent":$ram_percent},"disk":{"smart_status":"$smart_status","drives":$drives_json},"network":{"total_kb_sec":$net_kb,"lan_speed":"$lan_speed","wifi_speed":"$wifi_speed","wifi_type":"$wifi_type","wifi_model":"$wifi_model"},"gpu":{"vendor":"$gpu_vendor","model":"$gpu_model","usage_percent":$gpu_usage,"memory_used_gb":$gpu_mem_used,"memory_total_gb":$gpu_mem_total,"temperature_c":$gpu_temp,"status":"$gpu_status"},"alerts":$alerts}
 EOF
 }
 
@@ -601,6 +667,7 @@ write_history() {
     local gpu_temp="${12}"
     local gpu_mem_used="${13}"
     local gpu_mem_total="${14}"
+    local alerts="${15}"
     
     local history_file="${METRICS_DIR}/history.csv"
     local max_lines=1440
@@ -625,12 +692,20 @@ write_history() {
         disk_percent=$(echo "scale=2; ($total_disk_used / $total_disk_size) * 100" | bc)
     fi
     
-    # Columns: Timestamp,CPU_%,CPU_Temp,RAM_%,RAM_Used,RAM_Total,Disk_%,Disk_Used,Disk_Total,Net_KB_s,LAN_Speed,WiFi_Speed,GPU_%,GPU_Temp,GPU_Mem_Used,GPU_Mem_Total
-    local line="$timestamp,$cpu,$cpu_temp,$ram_percent,$ram_used,$ram_total,$disk_percent,$total_disk_used,$total_disk_size,$net,$lan_speed,$wifi_speed,$gpu_usage,$gpu_temp,$gpu_mem_used,$gpu_mem_total"
+    fi
+    
+    # Format alerts (remove brackets/quotes, replace comma with pipe)
+    local alert_str=""
+    if [ "$alerts" != "[]" ] && [ "$alerts" != "" ]; then
+        alert_str=$(echo "$alerts" | sed 's/[\[\]""]//g' | sed 's/,/ | /g')
+    fi
+    
+    # Columns: Timestamp,CPU_%,CPU_Temp,RAM_%,RAM_Used,RAM_Total,Disk_%,Disk_Used,Disk_Total,Net_KB_s,LAN_Speed,WiFi_Speed,GPU_%,GPU_Temp,GPU_Mem_Used,GPU_Mem_Total,Alerts
+    local line="$timestamp,$cpu,$cpu_temp,$ram_percent,$ram_used,$ram_total,$disk_percent,$total_disk_used,$total_disk_size,$net,$lan_speed,$wifi_speed,$gpu_usage,$gpu_temp,$gpu_mem_used,$gpu_mem_total,$alert_str"
     
     # Create header if missing
     if [ ! -f "$history_file" ]; then
-        echo "Timestamp,CPU_%,CPU_Temp,RAM_%,RAM_Used,RAM_Total,Disk_%,Disk_Used,Disk_Total,Net_KB_s,LAN_Speed,WiFi_Speed,GPU_%,GPU_Temp,GPU_Mem_Used,GPU_Mem_Total" > "$history_file"
+        echo "Timestamp,CPU_%,CPU_Temp,RAM_%,RAM_Used,RAM_Total,Disk_%,Disk_Used,Disk_Total,Net_KB_s,LAN_Speed,WiFi_Speed,GPU_%,GPU_Temp,GPU_Mem_Used,GPU_Mem_Total,Alerts" > "$history_file"
     fi
     
     # Append line
@@ -682,19 +757,22 @@ while true; do
     gpu_temp=$(echo "$gpu_data" | cut -d'|' -f6)
     gpu_status=$(echo "$gpu_data" | cut -d'|' -f7)
     
+    # Get Alerts
+    alerts=$(get_alerts "$cpu" "$cpu_temp" "$ram_percent" "$disk_str" "$smart_status" "$gpu_usage" "$gpu_temp")
+    
     # Create JSON
     json=$(create_json "$timestamp" "$cpu" "$cpu_temp" "$cpu_model" \
                       "$ram_used" "$ram_total" "$ram_free" "$ram_percent" \
                       "$disk_str" "$smart_status" \
                       "$gpu_vendor" "$gpu_model" "$gpu_usage" "$gpu_mem_used" "$gpu_mem_total" "$gpu_temp" "$gpu_status" \
-                      "$net_kb" "$lan_speed" "$wifi_speed" "$wifi_type" "$wifi_model")
+                      "$net_kb" "$lan_speed" "$wifi_speed" "$wifi_type" "$wifi_model" "$alerts")
     
     # Write to file (Atomic Write)
     echo "$json" > "${METRICS_FILE}.tmp"
     mv "${METRICS_FILE}.tmp" "$METRICS_FILE"
     
     # Write History
-    write_history "$timestamp" "$cpu" "$cpu_temp" "$ram_percent" "$ram_used" "$ram_total" "$disk_str" "$net_kb" "$lan_speed" "$wifi_speed" "$gpu_usage" "$gpu_temp" "$gpu_mem_used" "$gpu_mem_total"
+    write_history "$timestamp" "$cpu" "$cpu_temp" "$ram_percent" "$ram_used" "$ram_total" "$disk_str" "$net_kb" "$lan_speed" "$wifi_speed" "$gpu_usage" "$gpu_temp" "$gpu_mem_used" "$gpu_mem_total" "$alerts"
     
     # Format disk info for console
     disk_console=""
@@ -705,6 +783,17 @@ while true; do
     done
     
     # Optional: Log to console
+    # Print Alerts if any (parsing the JSON array string)
+    if [ "$alerts" != "[]" ] && [ "$alerts" != "" ]; then
+        # Remove brackets and quotes for cleaner output
+        clean_alerts=$(echo "$alerts" | sed 's/[\[\]""]//g')
+        IFS=',' read -ra ALERT_ADDR <<< "$clean_alerts"
+        for alert in "${ALERT_ADDR[@]}"; do
+            # Red color for alerts
+            echo -e "\033[0;31m[$timestamp] $alert\033[0m" >&2
+        done
+    fi
+    
     echo "[$timestamp] CPU: $cpu_model | ${cpu}% (${cpu_temp}C) | RAM: ${ram_used}GB/${ram_total}GB | Disk: $disk_console[$smart_status] | Net: ${net_kb}KB/s | LAN: $lan_speed | WiFi: $wifi_speed | GPU: $gpu_vendor $gpu_model" >&2
     
     sleep "$INTERVAL"

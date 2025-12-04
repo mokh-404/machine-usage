@@ -104,6 +104,10 @@ parse_json() {
             ".timestamp")
                 grep -o '"timestamp":"[^"]*"' "$json_file" | cut -d'"' -f4
                 ;;
+            ".alerts")
+                # Grep hack for array (very basic)
+                grep -o '"alerts":\[[^]]*\]' "$json_file" | sed 's/"alerts":\[//;s/\]//'
+                ;;
             *)
                 echo ""
                 ;;
@@ -175,6 +179,41 @@ show_dashboard() {
     
     # Build info text with progress bars
     local info_text=""
+    
+    # Alerts Section (Top Priority)
+    local alerts=""
+    if command -v jq &> /dev/null; then
+        local alert_type=$(jq -r '.alerts | type' "$METRICS_FILE" 2>/dev/null)
+        
+        if [ "$alert_type" == "array" ]; then
+            local alert_count=$(jq '.alerts | length' "$METRICS_FILE" 2>/dev/null)
+            for ((i=0; i<alert_count; i++)); do
+                local msg=$(jq -r ".alerts[$i]" "$METRICS_FILE")
+                alerts+="!!! $msg !!!\n"
+            done
+        elif [ "$alert_type" == "string" ]; then
+            local msg=$(jq -r ".alerts" "$METRICS_FILE")
+            alerts+="!!! $msg !!!\n"
+        fi
+    else
+        # Fallback
+        local raw_alerts=$(parse_json "$METRICS_FILE" ".alerts")
+        if [ -n "$raw_alerts" ] && [ "$raw_alerts" != "" ]; then
+             # Remove quotes and split by comma
+             IFS=',' read -ra ADDR <<< "$raw_alerts"
+             for i in "${!ADDR[@]}"; do
+                 local msg=$(echo "${ADDR[$i]}" | sed 's/"//g')
+                 if [ -n "$msg" ]; then
+                    alerts+="!!! $msg !!!\n"
+                 fi
+             done
+        fi
+    fi
+    
+    if [ -n "$alerts" ]; then
+        info_text+="\n$alerts\n"
+    fi
+
     info_text+="═══════════════════════════════════════════════════════\n"
     info_text+="     SYSTEM MONITORING DASHBOARD\n"
     info_text+="═══════════════════════════════════════════════════════\n\n"
@@ -305,6 +344,45 @@ show_text_dashboard() {
     local gpu_int=$(get_int "$gpu_usage")
     
     echo "Last Update: $timestamp"
+    
+    # Alerts Section
+    local alerts=""
+    if command -v jq &> /dev/null; then
+        local alert_type=$(jq -r '.alerts | type' "$METRICS_FILE" 2>/dev/null)
+        
+        if [ "$alert_type" == "array" ]; then
+            local alert_count=$(jq '.alerts | length' "$METRICS_FILE" 2>/dev/null)
+            if [ -n "$alert_count" ] && [ "$alert_count" -gt 0 ]; then
+                echo ""
+                echo -e "${RED}!!! CRITICAL ALERTS !!!${NC}"
+                for ((i=0; i<alert_count; i++)); do
+                    local msg=$(jq -r ".alerts[$i]" "$METRICS_FILE")
+                    echo -e "${RED}$msg${NC}"
+                done
+                echo ""
+            fi
+        elif [ "$alert_type" == "string" ]; then
+            local msg=$(jq -r ".alerts" "$METRICS_FILE")
+            echo ""
+            echo -e "${RED}!!! CRITICAL ALERTS !!!${NC}"
+            echo -e "${RED}$msg${NC}"
+            echo ""
+        fi
+    else
+        local raw_alerts=$(parse_json "$METRICS_FILE" ".alerts")
+        if [ -n "$raw_alerts" ] && [ "$raw_alerts" != "" ]; then
+             echo ""
+             echo -e "${RED}!!! CRITICAL ALERTS !!!${NC}"
+             IFS=',' read -ra ADDR <<< "$raw_alerts"
+             for i in "${!ADDR[@]}"; do
+                 local msg=$(echo "${ADDR[$i]}" | sed 's/"//g')
+                 if [ -n "$msg" ]; then
+                    echo -e "${RED}$msg${NC}"
+                 fi
+             done
+             echo ""
+        fi
+    fi
     
     # History check
     local history_file="${METRICS_FILE%/*}/history.csv"

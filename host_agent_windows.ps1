@@ -484,6 +484,54 @@ function Get-GpuInfo {
     return $gpuInfo
 }
 
+# Function to generate alerts based on thresholds
+function Get-Alerts {
+    param (
+        [double]$CpuPercent,
+        [double]$CpuTemp,
+        [double]$RamPercent,
+        [array]$Disks,
+        [string]$SmartStatus,
+        [object]$Gpu
+    )
+
+    $alerts = @()
+
+    # CPU Alerts
+    if ($CpuPercent -gt 90) {
+        $alerts += "CRITICAL: High CPU Usage ($CpuPercent%)"
+    }
+    if ($CpuTemp -gt 80) {
+        $alerts += "CRITICAL: High CPU Temperature ($CpuTemp C)"
+    }
+
+    # RAM Alerts
+    if ($RamPercent -gt 90) {
+        $alerts += "CRITICAL: High RAM Usage ($RamPercent%)"
+    }
+
+    # Disk Alerts
+    foreach ($d in $Disks) {
+        if ($d.Percent -gt 90) {
+            $alerts += "CRITICAL: Low Disk Space on $($d.Name) ($($d.Percent)% Used)"
+        }
+    }
+    if ($SmartStatus -match "Unhealthy" -or $SmartStatus -match "Warning") {
+        $alerts += "CRITICAL: Disk SMART Status Warning"
+    }
+
+    # GPU Alerts
+    if ($Gpu.Usage -gt 90) {
+        # Assuming Usage is 0-100
+        $alerts += "CRITICAL: High GPU Usage ($($Gpu.Usage)%)"
+    }
+    if ($Gpu.Temperature -gt 85) {
+        $alerts += "CRITICAL: High GPU Temperature ($($Gpu.Temperature) C)"
+    }
+
+    return $alerts
+}
+
 # Function to write historical data to CSV
 function Write-History {
     param (
@@ -495,7 +543,8 @@ function Write-History {
         [double]$Net,
         [string]$LanSpeed,
         [string]$WifiSpeed,
-        [object]$Gpu
+        [object]$Gpu,
+        [array]$Alerts
     )
     
     $HistoryFile = Join-Path $MetricsDir "history.csv"
@@ -515,13 +564,14 @@ function Write-History {
     }
     
     # Prepare CSV line
-    # Columns: Timestamp,CPU_%,CPU_Temp,RAM_%,RAM_Used,RAM_Total,Disk_%,Disk_Used,Disk_Total,Net_KB_s,LAN_Speed,WiFi_Speed,GPU_%,GPU_Temp,GPU_Mem_Used,GPU_Mem_Total
-    $line = "$Timestamp,$Cpu,$CpuTemp,$($Ram.Percent),$($Ram.Used),$($Ram.Total),$diskPercent,$totalDiskUsed,$totalDiskSize,$Net,$LanSpeed,$WifiSpeed,$($Gpu.Usage),$($Gpu.Temperature),$($Gpu.MemoryUsed),$($Gpu.MemoryTotal)"
+    # Columns: Timestamp,CPU_%,CPU_Temp,RAM_%,RAM_Used,RAM_Total,Disk_%,Disk_Used,Disk_Total,Net_KB_s,LAN_Speed,WiFi_Speed,GPU_%,GPU_Temp,GPU_Mem_Used,GPU_Mem_Total,Alerts
+    $alertStr = if ($Alerts) { $Alerts -join " | " } else { "" }
+    $line = "$Timestamp,$Cpu,$CpuTemp,$($Ram.Percent),$($Ram.Used),$($Ram.Total),$diskPercent,$totalDiskUsed,$totalDiskSize,$Net,$LanSpeed,$WifiSpeed,$($Gpu.Usage),$($Gpu.Temperature),$($Gpu.MemoryUsed),$($Gpu.MemoryTotal),$alertStr"
     
     try {
         # Create header if file doesn't exist
         if (-not (Test-Path $HistoryFile)) {
-            "Timestamp,CPU_%,CPU_Temp,RAM_%,RAM_Used,RAM_Total,Disk_%,Disk_Used,Disk_Total,Net_KB_s,LAN_Speed,WiFi_Speed,GPU_%,GPU_Temp,GPU_Mem_Used,GPU_Mem_Total" | Out-File -FilePath $HistoryFile -Encoding ascii
+            "Timestamp,CPU_%,CPU_Temp,RAM_%,RAM_Used,RAM_Total,Disk_%,Disk_Used,Disk_Total,Net_KB_s,LAN_Speed,WiFi_Speed,GPU_%,GPU_Temp,GPU_Mem_Used,GPU_Mem_Total,Alerts" | Out-File -FilePath $HistoryFile -Encoding ascii
         }
         
         # Append new line
@@ -559,6 +609,7 @@ while ($true) {
         $netKb = Get-NetworkUsage
         $netDetails = Get-NetworkDetails
         $gpu = Get-GpuInfo
+        $alerts = Get-Alerts -CpuPercent $cpuPercent -CpuTemp $cpuTemp -RamPercent $ram.Percent -Disks $disk -SmartStatus $smartStatus -Gpu $gpu
         
         # Build JSON object
         $metrics = @{
@@ -595,6 +646,7 @@ while ($true) {
                 fan_speed_percent = $gpu.FanSpeed
                 status            = $gpu.Status
             }
+            alerts    = $alerts
         }
         
         # Convert to JSON
@@ -604,9 +656,12 @@ while ($true) {
         Write-MetricsWithRetry -Path $metricsFile -Content $json | Out-Null
         
         # Write History
-        Write-History -Timestamp $timestamp -Cpu $cpuPercent -CpuTemp $cpuTemp -Ram $ram -Disks $disk -Net $netKb -LanSpeed $netDetails.LanSpeed -WifiSpeed $netDetails.WifiSpeed -Gpu $gpu
+        Write-MetricsWithRetry -Path $metricsFile -Content $json | Out-Null
         
-        # Optional: Write status to console (can be hidden)
+        # Write History
+        Write-History -Timestamp $timestamp -Cpu $cpuPercent -CpuTemp $cpuTemp -Ram $ram -Disks $disk -Net $netKb -LanSpeed $netDetails.LanSpeed -WifiSpeed $netDetails.WifiSpeed -Gpu $gpu -Alerts $alerts
+        
+        # Format disk info for console
         $gpuInfo = "$($gpu.Vendor) $($gpu.Model)"
         
         # Always show usage to prevent flickering
@@ -626,6 +681,14 @@ while ($true) {
         $diskInfo = ($disk | ForEach-Object { "$($_.Name) [$($_.Type)] $($_.Used)GB/$($_.Total)GB" }) -join " "
 
         $cpuModel = (Get-CimInstance Win32_Processor).Name
+        
+        # Print Alerts first if any
+        if ($alerts.Count -gt 0) {
+            foreach ($alert in $alerts) {
+                Write-Host "[$timestamp] $alert" -ForegroundColor Red
+            }
+        }
+        
         Write-Host "[$timestamp] CPU: $cpuModel | $cpuPercent% (${cpuTemp}C) | RAM: $($ram.Used)GB/$($ram.Total)GB | Disk: $diskInfo [$smartStatus] | Net: ${netKb}KB/s | LAN: $($netDetails.LanSpeed) | WiFi: $($netDetails.WifiSpeed) ($($netDetails.WifiType)) | GPU: $gpuInfo" -ForegroundColor Gray
 
     }

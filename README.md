@@ -99,6 +99,19 @@ The system automatically detects GPU vendors and collects usage statistics:
 - **Disk**: Usage (Used/Total/Free/Percent) for all mounted drives, Disk Type (SSD/HDD), and SMART Health Status
 - **Network**: Total I/O (KB/s), LAN Link Speed, WiFi Speed, WiFi Type (e.g., 802.11ax)
 - **GPU**: Vendor, Model, Usage percentage, Memory usage, Temperature, Power Usage (W), Fan Speed (%), Status
+- **Alerts**: Real-time alerts for critical system events (High CPU/RAM/Disk Usage, High Temp, Disk Health Warnings)
+
+## Alert System
+
+The system monitors critical thresholds and displays alerts in **RED** on the dashboard and console logs:
+
+- **CPU Usage**: > 90%
+- **CPU Temperature**: > 80°C
+- **RAM Usage**: > 90%
+- **Disk Usage**: > 90% (per drive)
+- **GPU Usage**: > 90%
+- **GPU Temperature**: > 85°C
+- **Disk Health**: Any SMART warning or failure status
 
 ## Troubleshooting
 
