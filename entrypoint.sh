@@ -7,6 +7,9 @@ MODE="${HOST_MONITORING_MODE:-agent}"
 echo "Starting System Monitor Container..."
 echo "Mode: $MODE"
 
+# Wipe old metrics to prevent stale data from previous sessions/machines
+rm -f /data/metrics.json /data/metrics.csv
+
 if [ "$MODE" == "native" ]; then
     echo "Native Mode detected. Starting internal Host Agent..."
     
