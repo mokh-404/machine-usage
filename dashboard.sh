@@ -460,17 +460,45 @@ echo "Reading metrics from: $METRICS_FILE"
 echo ""
 
 # Check if whiptail is available and if we're in a TTY
-if command -v whiptail &> /dev/null && [ -t 0 ]; then
+# Check if whiptail is available and if we're in a TTY
+if [ "$FORCE_GUI" == "1" ] && command -v whiptail &> /dev/null && [ -t 0 ]; then
+    export TERM=xterm-256color
     echo "Using Whiptail GUI mode"
+    sleep 1
     while true; do
         show_dashboard
         sleep "$REFRESH_INTERVAL"
     done
 else
-    echo "Using text mode (whiptail not available or not in TTY)"
+    echo "Using Text Mode (More reliable for Windows)"
     while true; do
         show_text_dashboard
         sleep "$REFRESH_INTERVAL"
+    done
+fi
+else
+    echo "============================================================"
+    echo " System Monitor Dashboard is Running"
+    echo "============================================================"
+    echo "Mode: Background / Non-Interactive"
+    echo ""
+    echo "To view the dashboard, please attach to the container:"
+    echo "  docker attach system-monitor-dashboard"
+    echo ""
+    echo "Or run the launcher script:"
+    echo "  ./run_windows.bat"
+    echo ""
+    echo "Logs will appear below if errors occur..."
+    
+    # Just sleep and tail the metrics file occasionally to show activity in logs
+    while true; do
+        if [ -f "$METRICS_FILE" ]; then
+            timestamp=$(parse_json "$METRICS_FILE" ".timestamp")
+            echo "[$timestamp] System Monitor Active - Metrics Updated"
+        else
+            echo "Waiting for metrics..."
+        fi
+        sleep 10
     done
 fi
 

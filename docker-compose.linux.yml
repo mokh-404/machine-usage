@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  system-monitor:
+    volumes:
+      # Mounts for Native Linux Monitoring
+      - /proc:/proc:ro
+      - /sys:/sys:ro
+      - /dev:/dev:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    privileged: true
+    network_mode: "host"

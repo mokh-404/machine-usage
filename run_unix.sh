@@ -1,19 +1,16 @@
 #!/bin/bash
 # run_unix.sh
 # One-Click Launcher for Linux/macOS
-# Starts Host Agent, Docker, and Dashboard
+# Starts System Monitor in Native Docker Mode
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 METRICS_DIR="$SCRIPT_DIR/metrics"
-METRICS_FILE="$METRICS_DIR/metrics.json"
-HOST_AGENT_SCRIPT="$SCRIPT_DIR/host_agent_unix.sh"
 
 # Colors
 GREEN='\033[0;32m'
 RED='\033[0;31m'
-YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 echo "============================================================"
@@ -35,70 +32,50 @@ fi
 cleanup() {
     echo ""
     echo "Cleaning up..."
-    
-    # Stop Docker container
-    echo "Stopping Docker container..."
     cd "$SCRIPT_DIR"
     docker-compose down 2>/dev/null || true
-    
-    # Kill host agent
-    echo "Stopping Host Agent..."
-    if [ -n "$HOST_AGENT_PID" ]; then
-        kill "$HOST_AGENT_PID" 2>/dev/null || true
-        wait "$HOST_AGENT_PID" 2>/dev/null || true
-    fi
-    
-    # Also try to find and kill any remaining host agent processes
-    pkill -f "host_agent_unix.sh" 2>/dev/null || true
-    
-    echo ""
     echo -e "${GREEN}System Monitor stopped successfully.${NC}"
 }
 
 # Set trap for cleanup on script exit
 trap cleanup EXIT INT TERM
 
-# Make host agent executable
-chmod +x "$HOST_AGENT_SCRIPT"
+# Set mode to native for Linux
+export HOST_MONITORING_MODE=native
 
-echo -e "${GREEN}[1/4] Starting Host Agent in background...${NC}"
-"$HOST_AGENT_SCRIPT" "$METRICS_FILE" 2 &
-HOST_AGENT_PID=$!
-sleep 2
+echo -e "${GREEN}[1/3] Starting System Monitor in Native Docker Mode...${NC}"
+echo "Note: This requires sudo permissions for hardware access."
 
-# Verify host agent is running
-if ! kill -0 "$HOST_AGENT_PID" 2>/dev/null; then
-    echo -e "${RED}[ERROR] Host Agent failed to start.${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}[2/4] Building Docker container...${NC}"
+# Build and start container
 cd "$SCRIPT_DIR"
-docker-compose build
-if [ $? -ne 0 ]; then
-    echo -e "${RED}[ERROR] Docker build failed.${NC}"
-    kill "$HOST_AGENT_PID" 2>/dev/null || true
-    exit 1
+
+# We use sudo for docker-compose to ensure privileged access works if user isn't in docker group
+if groups | grep -q "docker"; then
+    docker-compose -f docker-compose.yml -f docker-compose.linux.yml up -d --build
+else
+    # Check if we have sudo
+    if command -v sudo &> /dev/null; then
+        sudo -E docker-compose -f docker-compose.yml -f docker-compose.linux.yml up -d --build
+    else
+        echo "Warning: 'sudo' not found. Trying without it..."
+        docker-compose -f docker-compose.yml -f docker-compose.linux.yml up -d --build
+    fi
 fi
 
-echo -e "${GREEN}[3/4] Starting Docker container...${NC}"
-docker-compose up -d
 if [ $? -ne 0 ]; then
     echo -e "${RED}[ERROR] Docker start failed.${NC}"
-    kill "$HOST_AGENT_PID" 2>/dev/null || true
     exit 1
 fi
 
-sleep 3
+sleep 2
 
-echo -e "${GREEN}[4/4] Attaching to dashboard...${NC}"
+echo -e "${GREEN}[2/3] Dashboard is running.${NC}"
+echo -e "${GREEN}[3/3] Attaching to dashboard...${NC}"
 echo ""
 echo "============================================================"
-echo "  Dashboard is now running."
 echo "  Press Ctrl+C to stop and cleanup."
 echo "============================================================"
 echo ""
 
 # Attach to container and show dashboard
-docker exec -it system-monitor-dashboard /app/dashboard.sh
-
+docker attach system-monitor-dashboard

@@ -165,6 +165,17 @@ function Get-SmartStatus {
     }
 }
 
+# Function to get CPU Model
+function Get-CpuModel {
+    try {
+        $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+        if ($cpu.Name) { return $cpu.Name } else { return "Unknown CPU" }
+    }
+    catch {
+        return "Unknown CPU"
+    }
+}
+
 # Function to get Network Details (LAN Speed, WiFi Info)
 function Get-NetworkDetails {
     $info = @{
@@ -190,16 +201,26 @@ function Get-NetworkDetails {
             else { $info.WifiType = $wifi.MediaType }
         }
 
-        # LAN (Wired) - Exclude WiFi and Loopback
-        # We prioritize physical Ethernet if possible, but will take vEthernet if it's the only one active
+        # LAN (Wired) - Exclude WiFi, Loopback, and VPNs
+        # We prioritize physical Ethernet if possible
         $lan = $adapters | Where-Object { 
             $_.MediaType -notlike "*802.11*" -and 
             $_.Name -notlike "*Wi-Fi*" -and 
-            $_.InterfaceDescription -notlike "*Loopback*" 
+            $_.Name -notlike "*VPN*" -and 
+            $_.Name -notlike "*Tailscale*" -and 
+            $_.InterfaceDescription -notlike "*Loopback*" -and
+            $_.InterfaceDescription -notlike "*VPN*" -and
+            $_.InterfaceDescription -notlike "*Tailscale*" -and
+            $_.InterfaceDescription -notlike "*Radmin*"
         } | Sort-Object LinkSpeed -Descending | Select-Object -First 1
         
         if ($lan) {
-            $info.LanSpeed = $lan.LinkSpeed
+             # Extra check: If it's vEthernet, only show if it has significant speed (not 100 Mbps default)
+             if ($lan.Name -like "*vEthernet*" -and $lan.LinkSpeed -eq "100 Mbps") {
+                 $info.LanSpeed = "Not Connected (Virtual)"
+             } else {
+                 $info.LanSpeed = $lan.LinkSpeed
+             }
         }
     }
     catch {
@@ -617,7 +638,7 @@ while ($true) {
             cpu       = @{
                 percent        = $cpuPercent
                 temperature_c  = $cpuTemp
-                cpu_model_name = (Get-CimInstance Win32_Processor).Name
+                cpu_model_name = Get-CpuModel
             }
             ram       = @{
                 total_gb = $ram.Total

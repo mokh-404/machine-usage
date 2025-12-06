@@ -1,7 +1,7 @@
 @echo off
 REM run_windows.bat
 REM One-Click Launcher for Windows
-REM Starts Host Agent, Docker, and Dashboard
+REM Starts Host Agent, Docker, and Web Dashboard
 
 setlocal enabledelayedexpansion
 
@@ -53,35 +53,23 @@ if errorlevel 1 (
 
 timeout /t 3 /nobreak >nul
 
-echo [4/4] Attaching to dashboard...
+echo [4/4] Launching Web Dashboard...
 echo.
 echo ============================================================
-echo   Dashboard is now running.
-echo   Press Ctrl+C to stop and cleanup.
+echo   System Monitor is Running
+echo   Dashboard available at: http://localhost:8085
 echo ============================================================
 echo.
+timeout /t 2 >nul
+start http://localhost:8085
 
-REM Attach to container and show dashboard
-docker exec -it system-monitor-dashboard /app/dashboard.sh
+echo Attaching to container logs (Press Ctrl+C to stop)...
+docker compose logs -f
 
-REM Cleanup on exit
+:cleanup
 echo.
-echo Cleaning up...
 echo Stopping Docker container...
-docker-compose down
-
+docker compose stop
 echo Stopping Host Agent...
-REM Kill all PowerShell processes running host_agent_windows.ps1
-REM Use wmic to find processes with the script name in command line
-for /f "tokens=2 delims=," %%a in ('wmic process where "name='powershell.exe' or name='pwsh.exe'" get processid^,commandline /format:csv ^| findstr /I "host_agent_windows.ps1"') do (
-    if not "%%a"=="ProcessId" (
-        taskkill /F /PID %%a >nul 2>&1
-    )
-)
-REM Fallback: Try to kill by window title (if hidden window still has title)
-taskkill /F /FI "WINDOWTITLE eq *host_agent*" >nul 2>&1
-
-echo.
-echo System Monitor stopped successfully.
-pause
-
+Stop-Process -Name powershell -Force -ErrorAction SilentlyContinue
+echo Done.

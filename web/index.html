@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System Monitor v2</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <div class="logo">
+                <div class="icon-pulse"></div>
+                <h1>System Monitor <span class="badge">LIVE</span></h1>
+            </div>
+            <div class="status-bar">
+                <span id="last-updated">Connecting...</span>
+            </div>
+        </header>
+
+        <div id="alerts-container"></div>
+
+        <main class="dashboard-grid">
+            <!-- CPU Card -->
+            <div class="card cpu-card">
+                <div class="card-header">
+                    <h2>CPU</h2>
+                    <span id="cpu-temp" class="temp-badge">--°C</span>
+                </div>
+                <div class="card-body">
+                    <div class="metric-large">
+                        <span id="cpu-percent">0</span><span class="unit">%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div id="cpu-bar" class="fill" style="width: 0%"></div>
+                    </div>
+                    <p id="cpu-model" class="hardware-name">Loading...</p>
+                </div>
+            </div>
+
+            <!-- RAM Card -->
+            <div class="card ram-card">
+                <div class="card-header">
+                    <h2>Memory</h2>
+                </div>
+                <div class="card-body">
+                    <div class="metric-large">
+                        <span id="ram-percent">0</span><span class="unit">%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div id="ram-bar" class="fill" style="width: 0%"></div>
+                    </div>
+                    <div class="details-row">
+                        <span id="ram-used">0 GB</span> / <span id="ram-total">0 GB</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- GPU Card -->
+            <div class="card gpu-card">
+                <div class="card-header">
+                    <h2>GPU</h2>
+                    <span id="gpu-temp" class="temp-badge">--°C</span>
+                </div>
+                <div class="card-body">
+                    <div class="metric-large">
+                        <span id="gpu-percent">0</span><span class="unit">%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div id="gpu-bar" class="fill" style="width: 0%"></div>
+                    </div>
+                    <p id="gpu-model" class="hardware-name">Loading...</p>
+                    <div class="details-grid">
+                        <div class="detail-item">
+                            <span class="label">VRAM</span>
+                            <span id="gpu-mem">-- / -- GB</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="label">Fan</span>
+                            <span id="gpu-fan">--%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Network Card -->
+            <div class="card net-card">
+                <div class="card-header">
+                    <h2>Network</h2>
+                </div>
+                <div class="card-body">
+                    <div class="net-speed-container">
+                        <div class="net-icon">↓↑</div>
+                        <div class="metric-medium">
+                            <span id="net-speed">0</span> <span class="unit">KB/s</span>
+                        </div>
+                    </div>
+                    <div class="net-details">
+                        <div class="connection-item">
+                            <span class="label">LAN</span>
+                            <span id="lan-speed" class="value">--</span>
+                        </div>
+                        <div class="connection-item">
+                            <span class="label">WiFi</span>
+                            <span id="wifi-speed" class="value">--</span>
+                        </div>
+                        <div class="connection-info">
+                            <span id="wifi-name"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Disk Card (Full Width) -->
+            <div class="card disk-card full-width">
+                <div class="card-header">
+                    <h2>Storage</h2>
+                    <span id="disk-smart" class="status-badge">Checking...</span>
+                </div>
+                <div class="card-body" id="disk-list">
+                    <!-- Dynamic Disk Items will be injected here -->
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
