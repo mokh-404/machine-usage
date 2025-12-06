@@ -1,0 +1,5 @@
+metrics/*.json
+metrics/*.csv
+*.log
+.DS_Store
+Thumbs.db

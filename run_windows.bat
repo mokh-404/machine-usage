@@ -12,8 +12,10 @@ echo   System Monitoring Solution - Windows Launcher
 echo ============================================================
 echo.
 
-REM Create metrics directory
+REM Create metrics directory and clean old data
 if not exist "metrics" mkdir metrics
+del /q "metrics\*.json" 2>nul
+del /q "metrics\*.csv" 2>nul
 
 REM Check if Docker is running
 docker info >nul 2>&1

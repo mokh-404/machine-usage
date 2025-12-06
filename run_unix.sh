@@ -20,6 +20,8 @@ echo ""
 
 # Create metrics directory
 mkdir -p "$METRICS_DIR"
+# Clean old metrics to prevent stale data from previous sessions/machines
+rm -f "$METRICS_DIR"/*.json "$METRICS_DIR"/*.csv
 
 # Check if Docker is running
 if ! docker info >/dev/null 2>&1; then
