@@ -48,3 +48,40 @@ A comprehensive, hybrid system monitoring solution that breaks Docker's virtuali
 ### "Port 8085 is in use"
 - Edit `docker-compose.yml` and change `"8085:80"` to another port (e.g., `"9090:80"`).
 - Update `run_windows.bat` to match.
+
+## Pro Tip: "One Command" Setup (Windows)
+
+If you want to just run `docker compose up` without worrying about the host agent:
+
+1.  **Install the Agent as a Service** (Run once as Admin):
+    ```powershell
+    .\install_windows_service.ps1
+    ```
+    *Now the agent runs automatically when you log in.*
+
+2.  **Run Docker**:
+    Simply run `docker compose up-d` (or use Docker Desktop Dashboard).
+    The data will just be there!
+
+## Manual Execution (Advanced)
+
+If you prefer to run commands yourself (or if `docker compose up` didn't open the browser):
+
+### Windows
+1.  **Start Data Collector** (keep window open):
+    ```powershell
+    .\host_agent_windows.ps1
+    ```
+2.  **Start Dashboard** (new window):
+    ```powershell
+    docker compose up --build
+    ```
+3.  **Open Browser**: Go to [http://localhost:8085](http://localhost:8085).
+
+### Linux
+1.  **Run with Native Mode**:
+    ```bash
+    export HOST_MONITORING_MODE=native
+    docker compose -f docker-compose.yml -f docker-compose.linux.yml up --build
+    ```
+2.  **Open Browser**: Go to [http://localhost:8085](http://localhost:8085).
