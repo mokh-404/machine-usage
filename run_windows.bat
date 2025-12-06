@@ -27,8 +27,28 @@ if errorlevel 1 (
 )
 
 echo [1/4] Starting Host Agent in background...
-start /B powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0host_agent_windows.ps1" -MetricsFile "%~dp0metrics\metrics.json"
-timeout /t 2 /nobreak >nul
+echo Logs will be written to host_agent.log
+start "HostAgent" /B cmd /c "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0host_agent_windows.ps1" -MetricsFile "%~dp0metrics\metrics.json" > "%~dp0host_agent.log" 2>&1"
+
+echo Waiting for Host Agent to initialize...
+set "RETRIES=0"
+:wait_metrics
+if exist "%~dp0metrics\metrics.json" goto metrics_found
+timeout /t 1 /nobreak >nul
+set /a RETRIES+=1
+if %RETRIES% geq 10 (
+    echo [WARNING] Host Agent has not created metrics file yet.
+    echo Please check host_agent.log for errors.
+    echo The Dashboard might show empty data until the Agent starts working.
+    timeout /t 5
+    goto continue_docker
+)
+goto wait_metrics
+
+:metrics_found
+echo Host Agent is active.
+
+:continue_docker
 
 REM Store the PowerShell process ID for cleanup
 for /f "tokens=2" %%a in ('tasklist /FI "IMAGENAME eq powershell.exe" /FO LIST ^| findstr /I "PID"') do (
