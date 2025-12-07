@@ -16,6 +16,14 @@ if [ -z "$HOST_MONITORING_MODE" ]; then
 else
     MODE="$HOST_MONITORING_MODE"
 fi
+# Default to "agent" mode (external agent)
+MODE="${HOST_MONITORING_MODE:-agent}"
+
+# Enable debug mode for verbose logs
+set -x
+
+# Trap errors
+trap 'echo "Error on line $LINENO"; sleep 10' ERR
     echo "Native Mode detected. Starting internal Host Agent..."
     
     # Check for privileged access/mounts

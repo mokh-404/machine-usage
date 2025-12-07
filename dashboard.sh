@@ -460,24 +460,18 @@ echo "Reading metrics from: $METRICS_FILE"
 echo ""
 
 # Check if whiptail is available and if we're in a TTY
-# Check if we are interactive (TTY)
-if [ -t 0 ]; then
-    if [ "$FORCE_GUI" == "1" ] && command -v whiptail &> /dev/null; then
-        export TERM=xterm-256color
-        echo "Using Whiptail GUI mode"
-        sleep 1
-        while true; do
-            show_dashboard
-            sleep "$REFRESH_INTERVAL"
-        done
-    else
-        echo "Using Text Mode (More reliable for Windows)"
-        while true; do
-            show_text_dashboard
-            sleep "$REFRESH_INTERVAL"
-        done
-    fi
+# Determine Mode
+if [ -t 0 ] && [ "$FORCE_GUI" == "1" ] && command -v whiptail &> /dev/null; then
+    # Interactive GUI
+    export TERM=xterm-256color
+    echo "Using Whiptail GUI mode"
+    MODE_FUNC="show_dashboard"
+elif [ -t 0 ]; then
+    # Interactive Text
+    echo "Using Text Mode (More reliable for Windows)"
+    MODE_FUNC="show_text_dashboard"
 else
+    # Background
     echo "============================================================"
     echo " System Monitor Dashboard is Running"
     echo "============================================================"
@@ -486,12 +480,10 @@ else
     echo "To view the dashboard, please attach to the container:"
     echo "  docker attach system-monitor-dashboard"
     echo ""
-    echo "Or run the launcher script:"
-    echo "  ./run_windows.bat"
-    echo ""
-    echo "Logs will appear below if errors occur..."
-    
-    # Just sleep and tail the metrics file occasionally to show activity in logs
+    MODE_FUNC="background_loop"
+fi
+
+if [ "$MODE_FUNC" == "background_loop" ]; then
     while true; do
         if [ -f "$METRICS_FILE" ]; then
             timestamp=$(parse_json "$METRICS_FILE" ".timestamp")
@@ -500,6 +492,13 @@ else
             echo "Waiting for metrics..."
         fi
         sleep 10
+    done
+else
+    # Run the selected interactive function
+    sleep 1
+    while true; do
+        $MODE_FUNC
+        sleep "$REFRESH_INTERVAL"
     done
 fi
 
