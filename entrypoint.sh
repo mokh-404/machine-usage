@@ -25,6 +25,7 @@ fi
 
     # Start the host agent in the background
     # We pass the metrics file path. The agent writes to it, dashboard reads from it.
+    chmod +x /app/host_agent_unix.sh
     /app/host_agent_unix.sh "/data/metrics.json" 2 &
     AGENT_PID=$!
     echo "Internal Host Agent started (PID: $AGENT_PID)"

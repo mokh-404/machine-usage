@@ -460,22 +460,23 @@ echo "Reading metrics from: $METRICS_FILE"
 echo ""
 
 # Check if whiptail is available and if we're in a TTY
-# Check if whiptail is available and if we're in a TTY
-if [ "$FORCE_GUI" == "1" ] && command -v whiptail &> /dev/null && [ -t 0 ]; then
-    export TERM=xterm-256color
-    echo "Using Whiptail GUI mode"
-    sleep 1
-    while true; do
-        show_dashboard
-        sleep "$REFRESH_INTERVAL"
-    done
-else
-    echo "Using Text Mode (More reliable for Windows)"
-    while true; do
-        show_text_dashboard
-        sleep "$REFRESH_INTERVAL"
-    done
-fi
+# Check if we are interactive (TTY)
+if [ -t 0 ]; then
+    if [ "$FORCE_GUI" == "1" ] && command -v whiptail &> /dev/null; then
+        export TERM=xterm-256color
+        echo "Using Whiptail GUI mode"
+        sleep 1
+        while true; do
+            show_dashboard
+            sleep "$REFRESH_INTERVAL"
+        done
+    else
+        echo "Using Text Mode (More reliable for Windows)"
+        while true; do
+            show_text_dashboard
+            sleep "$REFRESH_INTERVAL"
+        done
+    fi
 else
     echo "============================================================"
     echo " System Monitor Dashboard is Running"
