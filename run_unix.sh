@@ -93,12 +93,13 @@ fi
 sleep 2
 
 echo -e "${GREEN}[2/3] Dashboard is running.${NC}"
-echo -e "${GREEN}[3/3] Attaching to dashboard...${NC}"
+echo -e "${GREEN}[3/3] Streaming logs (Press Ctrl+C to stop)...${NC}"
 echo ""
 echo "============================================================"
-echo "  Press Ctrl+C to stop and cleanup."
+echo "  Web Dashboard: http://localhost:8085"
+echo "  Press Ctrl+C to stop."
 echo "============================================================"
 echo ""
 
-# Attach to container and show dashboard
-docker attach system-monitor-dashboard
+# Use logs -f instead of attach
+docker compose logs -f system-monitor

@@ -24,6 +24,15 @@
 - Check **`host_agent.log`** in the project directory for errors.
 - Run `.\install_windows_service.ps1` (Once, as Admin) to install it as a background service.
 
+### ✅ **Windows Deployment Status: Verified**
+- **Success:** The system runs correctly using `run_windows.bat` or by manually running `host_agent_windows.ps1` alongside Docker.
+- **Intermittent Disconnects:** You may see "Connection Lost" briefly. This is usually the browser refreshing or the Agent skipping a heartbeat. It auto-recovers.
+- **Note:** `docker compose up` alone is **Viewer Only**. You *must* run the Host Agent script to see data.
+
+### ❓ Connection Lost / "Waiting for Agent..."
+If the dashboard stays on "Waiting...", it means the Host Agent is not running.
+**Fix:** Run `.\host_agent_windows.ps1` in a separate PowerShell window.
+
 ## 4. UI Not Updating (Stuck)
 **Cause:** Docker file caching issue on Windows.
 **Solution:**

@@ -62,33 +62,48 @@ async function fetchData() {
 
 function updateUI(data) {
     // Timestamp
-    els.updated.textContent = `Last Updated: ${data.timestamp}`;
+    els.updated.textContent = `Last Updated: ${data.timestamp || 'Unknown'}`;
     els.updated.style.color = 'var(--text-dim)';
 
     // CPU
-    updateMetric(els.cpu, data.cpu);
+    if (data.cpu) {
+        updateMetric(els.cpu, data.cpu);
+    }
 
     // RAM
-    updateMetric(els.ram, data.ram);
-    els.ram.used.textContent = data.ram.used_gb;
-    els.ram.total.textContent = data.ram.total_gb;
+    if (data.ram) {
+        updateMetric(els.ram, data.ram);
+        els.ram.used.textContent = data.ram.used_gb || '--';
+        els.ram.total.textContent = data.ram.total_gb || '--';
+    }
 
     // GPU
-    els.gpu.percent.textContent = formatInt(data.gpu.usage_percent);
-    els.gpu.bar.style.width = `${formatInt(data.gpu.usage_percent)}%`;
-    els.gpu.model.textContent = `${data.gpu.vendor} ${data.gpu.model}`;
-    els.gpu.temp.textContent = data.gpu.temperature_c ? `${data.gpu.temperature_c}°C` : '--°C';
-    els.gpu.mem.textContent = `${data.gpu.memory_used_gb || '--'} / ${data.gpu.memory_total_gb || '--'} GB`;
-    els.gpu.fan.textContent = data.gpu.fan_speed_percent ? `${data.gpu.fan_speed_percent}%` : '--%';
+    if (data.gpu) {
+        els.gpu.percent.textContent = formatInt(data.gpu.usage_percent);
+        els.gpu.bar.style.width = `${formatInt(data.gpu.usage_percent)}%`;
+        els.gpu.model.textContent = `${data.gpu.vendor || ''} ${data.gpu.model || 'No GPU'}`;
+        els.gpu.temp.textContent = data.gpu.temperature_c ? `${data.gpu.temperature_c}°C` : '--°C';
+        els.gpu.mem.textContent = `${data.gpu.memory_used_gb || '--'} / ${data.gpu.memory_total_gb || '--'} GB`;
+        els.gpu.fan.textContent = data.gpu.fan_speed_percent ? `${data.gpu.fan_speed_percent}%` : '--%';
+    } else {
+        // Clear GPU stats if missing
+        els.gpu.percent.textContent = '0';
+        els.gpu.bar.style.width = '0%';
+        els.gpu.model.textContent = 'Waiting for data...';
+    }
 
     // Network
-    els.net.speed.textContent = data.network.total_kb_sec;
-    els.net.lan.textContent = data.network.lan_speed || 'Not Connected';
-    els.net.wifi.textContent = data.network.wifi_speed || 'Not Connected';
-    els.net.wifiName.textContent = data.network.wifi_model ? `${data.network.wifi_model} (${data.network.wifi_type})` : '';
+    if (data.network) {
+        els.net.speed.textContent = data.network.total_kb_sec || '0';
+        els.net.lan.textContent = data.network.lan_speed || 'Not Connected';
+        els.net.wifi.textContent = data.network.wifi_speed || 'Not Connected';
+        els.net.wifiName.textContent = data.network.wifi_model ? `${data.network.wifi_model} (${data.network.wifi_type})` : '';
+    }
 
     // Disks
-    renderDisks(data.disk);
+    if (data.disk) {
+        renderDisks(data.disk);
+    }
 
     // Alerts
     renderAlerts(data.alerts);

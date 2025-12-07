@@ -23,7 +23,8 @@ MODE="${HOST_MONITORING_MODE:-agent}"
 set -x
 
 # Create a dummy metrics file so Nginx doesn't 404 immediately
-echo '{"timestamp": "Waiting for Agent...", "cpu": {"percent": 0}, "ram": {"percent": 0}, "alerts": ["System Initializing..."]}' > /data/metrics.json
+# We must include all expected keys to prevent JS errors in the dashboard
+echo '{"timestamp": "Waiting for Agent...", "cpu": {"percent": 0}, "ram": {"percent": 0}, "gpu": {"usage_percent": 0, "vendor": "", "model": "Initializing..."}, "network": {}, "disk": {}, "alerts": ["System Initializing..."]}' > /data/metrics.json
 chmod 666 /data/metrics.json
 
 # Test Write Access to Data Volume
