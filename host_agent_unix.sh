@@ -692,7 +692,7 @@ write_history() {
         disk_percent=$(echo "scale=2; ($total_disk_used / $total_disk_size) * 100" | bc)
     fi
     
-    fi
+
     
     # Format alerts (remove brackets/quotes, replace comma with pipe)
     local alert_str=""

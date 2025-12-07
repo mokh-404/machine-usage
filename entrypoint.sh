@@ -32,6 +32,10 @@ echo "Testing write access..." > /data/write_test.txt && echo "Write test passed
 
 # Trap errors
 trap 'echo "Error on line $LINENO"; sleep 10' ERR
+
+echo "Starting System Monitor in [$MODE] mode..."
+
+if [[ "$MODE" == "native" ]]; then
     echo "Native Mode detected. Starting internal Host Agent..."
     
     # Check for privileged access/mounts
