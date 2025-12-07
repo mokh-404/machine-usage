@@ -767,9 +767,14 @@ while true; do
                       "$gpu_vendor" "$gpu_model" "$gpu_usage" "$gpu_mem_used" "$gpu_mem_total" "$gpu_temp" "$gpu_status" \
                       "$net_kb" "$lan_speed" "$wifi_speed" "$wifi_type" "$wifi_model" "$alerts")
     
+    
     # Write to file (Atomic Write)
+    echo "DEBUG: Writing JSON to $METRICS_FILE" >&2
     echo "$json" > "${METRICS_FILE}.tmp"
+    chmod 666 "${METRICS_FILE}.tmp"
     mv "${METRICS_FILE}.tmp" "$METRICS_FILE"
+    # Ensure final file is readable even if mv behaved oddly
+    chmod 666 "$METRICS_FILE"
     
     # Write History
     write_history "$timestamp" "$cpu" "$cpu_temp" "$ram_percent" "$ram_used" "$ram_total" "$disk_str" "$net_kb" "$lan_speed" "$wifi_speed" "$gpu_usage" "$gpu_temp" "$gpu_mem_used" "$gpu_mem_total" "$alerts"

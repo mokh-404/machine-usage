@@ -22,6 +22,9 @@ MODE="${HOST_MONITORING_MODE:-agent}"
 # Enable debug mode for verbose logs
 set -x
 
+# Test Write Access to Data Volume
+echo "Testing write access..." > /data/write_test.txt && echo "Write test passed" || echo "Write test FAILED"
+
 # Trap errors
 trap 'echo "Error on line $LINENO"; sleep 10' ERR
     echo "Native Mode detected. Starting internal Host Agent..."
