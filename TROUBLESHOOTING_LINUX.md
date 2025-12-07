@@ -9,6 +9,15 @@
 - **Option B (Install Drivers):**
   Install `nvidia-container-toolkit` and `nvidia-utils` (Arch) or `nvidia-driver` (Ubuntu).
 
+## 2. "Bad interpreter" or "Command not found"
+**Error:** `/bin/bash^M: bad interpreter: No such file or directory`
+**Cause:** The file was saved with Windows line endings (CRLF) instead of Linux ones (LF).
+**Solution:**
+- Run this command to fix all scripts:
+  ```bash
+  sed -i 's/\r$//' *.sh
+  ```
+
 ## 2. Dashboard Shows Zeros / "Legacy Mode"
 **Cause:** You ran `docker compose up` without the Linux overrides, so the container is isolated from the hardware.
 **Solution:**

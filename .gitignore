@@ -3,3 +3,7 @@ metrics/*.csv
 *.log
 .DS_Store
 Thumbs.db
+host_agent.log
+docker-compose.linux.yml
+metrics/
+

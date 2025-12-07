@@ -24,9 +24,12 @@ if errorlevel 1 (
     echo Please start Docker Desktop and try again.
     pause
     exit /b 1
+    exit /b 1
 )
 
-echo [1/4] Starting Host Agent in background...
+REM Default mode is 'agent' (External Host Agent). 
+REM The container will wait for data in /data/metrics.json
+
 echo Logs will be written to host_agent.log
 start "HostAgent" /B cmd /c "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0host_agent_windows.ps1" -MetricsFile "%~dp0metrics\metrics.json" > "%~dp0host_agent.log" 2>&1"
 

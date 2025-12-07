@@ -1,16 +1,21 @@
 #!/bin/bash
 # entrypoint.sh
 
-# Default to "agent" mode (external agent)
-MODE="${HOST_MONITORING_MODE:-agent}"
-
-echo "Starting System Monitor Container..."
-echo "Mode: $MODE"
-
-# Wipe old metrics to prevent stale data from previous sessions/machines
-rm -f /data/metrics.json /data/metrics.csv
-
-if [ "$MODE" == "native" ]; then
+# Auto-Detect Detection
+# If the user didn't explicitly set a mode, we try to guess it.
+if [ -z "$HOST_MONITORING_MODE" ]; then
+    echo "Detecting environment..."
+    # Check for explicit Native flag (injected by docker-compose.linux.yml)
+    if [ "$IS_LINUX_NATIVE" == "true" ]; then
+         echo "Auto-detected: NATIVE (via IS_LINUX_NATIVE)"
+         MODE="native"
+    else
+         echo "Auto-detected: AGENT (Default)"
+         MODE="agent"
+    fi
+else
+    MODE="$HOST_MONITORING_MODE"
+fi
     echo "Native Mode detected. Starting internal Host Agent..."
     
     # Check for privileged access/mounts

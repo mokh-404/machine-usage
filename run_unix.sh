@@ -45,6 +45,27 @@ trap cleanup EXIT INT TERM
 # Set mode to native for Linux
 export HOST_MONITORING_MODE=native
 
+# Ensure Linux Docker Override exists
+if [ ! -f "docker-compose.linux.yml" ]; then
+    echo "Creating missing docker-compose.linux.yml..."
+    cat > docker-compose.linux.yml <<EOF
+version: '3.8'
+
+services:
+  system-monitor:
+    volumes:
+      # Mounts for Native Linux Monitoring
+      - /proc:/proc:ro
+      - /sys:/sys:ro
+      - /dev:/dev:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    privileged: true
+    network_mode: "host"
+    environment:
+      - IS_LINUX_NATIVE=true
+EOF
+fi
+
 echo -e "${GREEN}[1/3] Starting System Monitor in Native Docker Mode...${NC}"
 echo "Note: This requires sudo permissions for hardware access."
 
