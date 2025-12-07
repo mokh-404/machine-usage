@@ -51,6 +51,7 @@ async function fetchData() {
         const response = await fetch(`${API_ENDPOINT}?t=${Date.now()}`);
         if (!response.ok) throw new Error('Network response was not ok');
         const data = await response.json();
+        console.log('DEBUG: Received Data:', data);
         updateUI(data);
     } catch (error) {
         console.error('Fetch error:', error);

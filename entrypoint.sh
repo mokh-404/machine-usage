@@ -22,6 +22,10 @@ MODE="${HOST_MONITORING_MODE:-agent}"
 # Enable debug mode for verbose logs
 set -x
 
+# Create a dummy metrics file so Nginx doesn't 404 immediately
+echo '{"timestamp": "Waiting for Agent...", "cpu": {"percent": 0}, "ram": {"percent": 0}, "alerts": ["System Initializing..."]}' > /data/metrics.json
+chmod 666 /data/metrics.json
+
 # Test Write Access to Data Volume
 echo "Testing write access..." > /data/write_test.txt && echo "Write test passed" || echo "Write test FAILED"
 
