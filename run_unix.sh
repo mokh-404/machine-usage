@@ -39,11 +39,32 @@ cleanup() {
     echo -e "${GREEN}System Monitor stopped successfully.${NC}"
 }
 
-# Set trap for cleanup on script exit
-trap cleanup EXIT INT TERM
+# Check if running in WSL
+if grep -qE "(Microsoft|WSL)" /proc/version &> /dev/null; then
+    IS_WSL=true
+    echo -e "${GREEN}WSL Environment Detected!${NC}"
+else
+    IS_WSL=false
+fi
 
-# Set mode to native for Linux
-export HOST_MONITORING_MODE=native
+if [ "$IS_WSL" = true ]; then
+    # In WSL, we run the agent LOCALLY on the host so it can access powershell.exe
+    # The container will just run the dashboard
+    export HOST_MONITORING_MODE=agent
+    
+    echo "Starting Host Agent on WSL Host..."
+    chmod +x "$SCRIPT_DIR/host_agent_unix.sh"
+    "$SCRIPT_DIR/host_agent_unix.sh" "$METRICS_DIR/metrics.json" 2 &
+    AGENT_PID=$!
+    echo "Host Agent started (PID: $AGENT_PID)"
+    
+    # Add agent kill to cleanup trap
+    trap "kill $AGENT_PID 2>/dev/null; cleanup" EXIT INT TERM
+else
+    # Standard Linux: Run everything in Docker (Native Mode)
+    export HOST_MONITORING_MODE=native
+    trap cleanup EXIT INT TERM
+fi
 
 # Ensure Linux Docker Override exists
 if [ ! -f "docker-compose.linux.yml" ]; then
@@ -73,6 +94,7 @@ echo "Note: This requires sudo permissions for hardware access."
 cd "$SCRIPT_DIR"
 
 # We use sudo for docker-compose to ensure privileged access works if user isn't in docker group
+# If in WSL, we might not need sudo for docker if configured correctly, but we'll stick to standard check
 if groups | grep -q "docker"; then
     docker-compose -f docker-compose.yml -f docker-compose.linux.yml up -d --build
 else

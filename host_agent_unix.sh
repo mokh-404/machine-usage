@@ -18,7 +18,9 @@ echo ""
 
 # Detect OS
 detect_os() {
-    if [[ "$OSTYPE" == "darwin"* ]]; then
+    if grep -qE "(Microsoft|WSL)" /proc/version &> /dev/null; then
+        echo "WSL"
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
         echo "macOS"
     elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
         echo "Linux"
@@ -28,6 +30,33 @@ detect_os() {
 }
 
 OS_TYPE=$(detect_os)
+
+# Helper to run PowerShell commands in WSL (removes CR/LF)
+# Helper to run PowerShell commands in WSL (removes CR/LF)
+run_powershell() {
+    local cmd="$1"
+    local ps_exe="powershell.exe"
+    
+    # Check if powershell.exe is in PATH
+    if ! command -v "$ps_exe" &> /dev/null; then
+        # Check common Windows paths
+        if [ -f "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
+            ps_exe="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+        elif [ -f "/mnt/c/Windows/sysnative/WindowsPowerShell/v1.0/powershell.exe" ]; then
+             ps_exe="/mnt/c/Windows/sysnative/WindowsPowerShell/v1.0/powershell.exe"
+        else
+            echo "Error: powershell.exe not found" >&2
+            return 1
+        fi
+    fi
+    
+    "$ps_exe" -NoProfile -NonInteractive -Command "$cmd" 2>/tmp/ps_err | tr -d '\r'
+    
+    # Log errors if any (for debugging)
+    if [ -s /tmp/ps_err ]; then
+         cat /tmp/ps_err >&2
+    fi
+}
 
 # Function to calculate with bc or awk fallback
 calc() {
@@ -42,7 +71,10 @@ calc() {
 
 # Function to get CPU Model
 get_cpu_model() {
-    if [[ "$OS_TYPE" == "Linux" ]]; then
+    if [[ "$OS_TYPE" == "WSL" ]]; then
+        local model=$(run_powershell "Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name")
+        echo "${model:-Unknown CPU}"
+    elif [[ "$OS_TYPE" == "Linux" ]]; then
         local model=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | sed 's/^[ \t]*//')
         echo "${model:-Unknown CPU}"
     elif [[ "$OS_TYPE" == "macOS" ]]; then
@@ -72,6 +104,19 @@ get_cpu_temp() {
         else
             echo "0"
         fi
+    elif [[ "$OS_TYPE" == "WSL" ]]; then
+        # WSL: Use PowerShell to get host CPU temp
+        local temp_c=$(run_powershell "Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace 'root/wmi' -ErrorAction SilentlyContinue | Select -First 1 -ExpandProperty CurrentTemperature | ForEach-Object { (\$_ / 10) - 273.15 }")
+        # If MSAcpi fails, try Performance Counter
+        if [ -z "$temp_c" ]; then
+             temp_c=$(run_powershell "Get-Counter '\Thermal Zone Information(*)\Temperature' -ErrorAction SilentlyContinue | Select -ExpandProperty CounterSamples | Select -First 1 -ExpandProperty CookedValue | ForEach-Object { \$_ - 273.15 }")
+        fi
+        
+        if [ -n "$temp_c" ]; then
+            calc "$temp_c"
+        else
+            echo "0"
+        fi
     else
         # macOS requires sudo/powermetrics, return 0 for now
         echo "0"
@@ -80,20 +125,21 @@ get_cpu_temp() {
 
 # Function to get CPU usage (works on both Linux and macOS)
 get_cpu_usage() {
-    if [[ "$OS_TYPE" == "Linux" ]]; then
-        # Linux: Use /proc/stat
+    if [[ "$OS_TYPE" == "Linux" ]] || [[ "$OS_TYPE" == "WSL" ]]; then
+        # Linux/WSL: Use /proc/stat
         local cpu_line=$(grep '^cpu ' /proc/stat)
         local idle=$(echo $cpu_line | awk '{print $5}')
-        local total=0
-        for val in $cpu_line; do
-            total=$((total + val))
-        done
+        # Use awk to sum all fields (total ticks)
+        local total=$(echo "$cpu_line" | awk '{sum=0; for(i=2;i<=NF;i++) sum+=$i; print sum}')
         
         # Calculate percentage (simplified, for more accuracy need previous values)
         if [ -f /tmp/cpu_prev ]; then
-            local prev=$(cat /tmp/cpu_prev)
-            local diff=$((total - prev))
-            local idle_diff=$((idle - $(echo $prev | awk '{print $5}')))
+            local prev_line=$(cat /tmp/cpu_prev)
+            local prev_total=$(echo "$prev_line" | awk '{sum=0; for(i=2;i<=NF;i++) sum+=$i; print sum}')
+            local prev_idle=$(echo "$prev_line" | awk '{print $5}')
+            
+            local diff=$((total - prev_total))
+            local idle_diff=$((idle - prev_idle))
             if [ $diff -gt 0 ]; then
                 local usage=$((100 - (idle_diff * 100 / diff)))
                 echo "$usage"
@@ -115,8 +161,26 @@ get_cpu_usage() {
 
 # Function to get RAM usage
 get_ram_usage() {
-    if [[ "$OS_TYPE" == "Linux" ]]; then
-        # Linux: Parse /proc/meminfo
+    if [[ "$OS_TYPE" == "WSL" ]]; then
+        # WSL: Get Real Host Memory via PowerShell
+        # Use string interpolation to avoid arithmetic errors
+        local ram_info=$(run_powershell "Get-CimInstance Win32_OperatingSystem | ForEach-Object { \"\$(\$_.TotalVisibleMemorySize)|\$(\$_.FreePhysicalMemory)\" }")
+        
+        if [ -n "$ram_info" ]; then
+            local total_kb=$(echo "$ram_info" | cut -d'|' -f1)
+            local free_kb=$(echo "$ram_info" | cut -d'|' -f2)
+            
+            local total_gb=$(calc "$total_kb / 1024 / 1024")
+            local free_gb=$(calc "$free_kb / 1024 / 1024")
+            local used_gb=$(calc "$total_gb - $free_gb")
+            local percent=$(calc "($used_gb / $total_gb) * 100")
+            echo "$used_gb|$total_gb|$free_gb|$percent"
+            return
+        fi
+    fi
+
+    if [[ "$OS_TYPE" == "Linux" ]] || [[ "$OS_TYPE" == "WSL" ]]; then
+        # Linux/WSL: Parse /proc/meminfo
         local total_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
         local free_kb=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
         if [ -z "$free_kb" ]; then
@@ -148,64 +212,75 @@ get_ram_usage() {
 
 # Function to get Disk usage
 # Function to get Disk usage (Multi-disk)
-# Function to get Disk usage (Multi-disk)
 get_disk_usage() {
     local drives=""
-    if [[ "$OS_TYPE" == "Linux" ]]; then
-        # Linux: Use df, exclude pseudo-filesystems
-        # Output format: Size Used Avail Use% Mounted
-        # We use -P for portability (no line breaks) and -B G for Gigabytes
+    if [[ "$OS_TYPE" == "WSL" ]]; then
+         # WSL: Pure PowerShell detection (bypasses df issues)
+         local ps_cmd=$(cat <<'EOF'
+         $disks = Get-CimInstance Win32_LogicalDisk | Where-Object { $_.DriveType -eq 3 };
+         foreach ($d in $disks) {
+             $letter = $d.DeviceID.Trim(':');
+             $total = [math]::Round($d.Size / 1GB);
+             $free = [math]::Round($d.FreeSpace / 1GB);
+             $used = $total - $free;
+             $percent = 0;
+             if ($total -gt 0) { $percent = [math]::Round(($used / $total) * 100) };
+             
+             $type = 'Unknown';
+             try {
+                 $part = Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue;
+                 if ($part) {
+                     $disk = $part | Get-Disk;
+                     if ($disk) {
+                          $phys = Get-PhysicalDisk | Where-Object DeviceId -eq $disk.Number | Select-Object -First 1;
+                          if ($phys.MediaType) { $type = $phys.MediaType };
+                     }
+                 }
+             } catch {}
+             if (-not $type -or $type -eq 'Unknown') { $type = 'SSD' };
+             
+             Write-Host "$letter`:|$used|$total|$percent|$type"
+         }
+EOF
+)
+         local disk_info=$(run_powershell "$ps_cmd")
+         
+         while IFS='|' read -r ps_name ps_used ps_total ps_percent ps_type; do
+             if [ -n "$ps_name" ]; then
+                 clean_name="${ps_name}\\" # C:\ format
+                 if [ -n "$drives" ]; then drives="${drives};"; fi
+                 drives="${drives}${clean_name},${ps_used},${ps_total},${ps_percent},${ps_type}"
+             fi
+         done <<< "$disk_info"
+         echo "$drives"
+         return
+    fi
+    
+    if [[ "$OS_TYPE" == "Linux" ]] || [[ "$OS_TYPE" == "WSL" ]]; then
+        # Linux: Use df
         while read -r line; do
             local total=$(echo "$line" | awk '{print $2}' | sed 's/G//')
             local used=$(echo "$line" | awk '{print $3}' | sed 's/G//')
-            local free=$(echo "$line" | awk '{print $4}' | sed 's/G//')
             local percent=$(echo "$line" | awk '{print $5}' | sed 's/%//')
             local mount=$(echo "$line" | awk '{print $6}')
+            local type="Unknown"
+            local clean_name="$mount"
+
+            # Standard Linux Disk Type (SSD/HDD)
             local device=$(echo "$line" | awk '{print $1}')
             
-            # Determine Disk Type (SSD/HDD)
-            local type="Unknown"
-            
-            # Try to resolve device to block name (e.g., /dev/sda1 -> sda)
             if [[ "$device" == "/dev/"* ]]; then
                 local dev_name=$(basename "$device")
-                # Remove partition digits (sda1 -> sda, nvme0n1p1 -> nvme0n1)
                 local parent_dev=$(lsblk -no pkname "/dev/$dev_name" 2>/dev/null)
-                if [ -z "$parent_dev" ]; then
-                     # Fallback regex if lsblk fails or returns empty
-                     parent_dev=$(echo "$dev_name" | sed 's/[0-9]*$//')
-                fi
+                if [ -z "$parent_dev" ]; then parent_dev=$(echo "$dev_name" | sed 's/[0-9]*$//'); fi
                 
-                # Check rotational status in /sys/block
-                if [ -f "/sys/block/$parent_dev/queue/rotational" ]; then
-                    local rota=$(cat "/sys/block/$parent_dev/queue/rotational")
-                    if [ "$rota" -eq 0 ]; then
-                        type="SSD"
-                    elif [ "$rota" -eq 1 ]; then
-                        type="HDD"
-                    fi
-                elif [ -f "/sys/block/$dev_name/queue/rotational" ]; then
-                     # Sometimes the partition itself might be listed (rare)
-                    local rota=$(cat "/sys/block/$dev_name/queue/rotational")
-                    if [ "$rota" -eq 0 ]; then
-                        type="SSD"
-                    elif [ "$rota" -eq 1 ]; then
-                        type="HDD"
-                    fi
-                else
-                    # Fallback to lsblk
-                    local rota=$(lsblk -d -o rota "/dev/$parent_dev" 2>/dev/null | tail -1)
-                    if [ "$rota" == "0" ]; then
-                        type="SSD"
-                    elif [ "$rota" == "1" ]; then
-                        type="HDD"
-                    fi
-                fi
+                local rota=$(lsblk -d -o rota "/dev/$parent_dev" 2>/dev/null | tail -1)
+                if [ "$rota" == "0" ]; then type="SSD"; elif [ "$rota" == "1" ]; then type="HDD"; fi
             fi
             
             if [ -n "$drives" ]; then drives="${drives};"; fi
-            drives="${drives}${mount},${used},${total},${percent},${type}"
-        done < <(df -BG -P | grep -vE '^Filesystem|tmpfs|devtmpfs|overlay|none|udev|run|shm')
+            drives="${drives}${clean_name},${used},${total},${percent},${type}"
+        done < <(df -BG -P | grep -E '^/dev/|/mnt/')
     elif [[ "$OS_TYPE" == "macOS" ]]; then
         # macOS
         while read -r line; do
@@ -215,10 +290,7 @@ get_disk_usage() {
             local percent=$(echo "$line" | awk '{print $5}' | sed 's/%//')
             local mount=$(echo "$line" | awk '{print $9}')
             
-            # macOS disk type detection is complex, defaulting to SSD for now as most Macs are SSD
-            local type="SSD"
-            # Attempt to check system_profiler (slow, so maybe skip or cache)
-            # For now, we'll leave it as "SSD" or "Unknown" to match Windows "Unknown" fallback
+            local type="SSD" # Default
             
             if [ -n "$drives" ]; then drives="${drives};"; fi
             drives="${drives}${mount},${used},${total},${percent},${type}"
@@ -229,6 +301,26 @@ get_disk_usage() {
 
 # Function to get SMART Status
 get_smart_status() {
+    if [[ "$OS_TYPE" == "WSL" ]]; then
+        # WSL: Use PowerShell to get disk health
+        local status=$(run_powershell "Get-PhysicalDisk | Where-Object { \$_.HealthStatus -ne 'Healthy' } | Measure-Object | Select -ExpandProperty Count")
+        status=${status:-0} # Default to 0 if empty
+        
+        if [ "$status" -eq 0 ]; then
+             # Need total drive count to mimic "Healthy (N Drives)"
+             local count=$(run_powershell "Get-PhysicalDisk | Measure-Object | Select -ExpandProperty Count")
+             count=${count:-0}
+             if [ "$count" -eq 0 ]; then count=1; fi
+             echo "Healthy ($count Drives)"
+        elif [ "$status" -gt 0 ]; then
+             echo "Warning ($status Unhealthy)"
+        else
+             echo "Unknown"
+        fi
+        return
+    fi
+    
+    # Linux standard smartctl
     if ! command -v smartctl &> /dev/null; then
         echo "Unknown (smartctl missing)"
         return
@@ -263,10 +355,25 @@ get_smart_status() {
 
 # Function to get Network usage (Total KB/s)
 get_network_usage() {
-    if [[ "$OS_TYPE" == "Linux" ]]; then
+    if [[ "$OS_TYPE" == "WSL" ]]; then
+        # WSL: Use PowerShell to get *Host* Network Traffic
+        # We use Get-Counter for total bytes/sec across all interfaces
+        local counters=$(run_powershell "Get-Counter '\Network Interface(*)\Bytes Total/sec' -ErrorAction SilentlyContinue | Select -ExpandProperty CounterSamples | Measure-Object -Property CookedValue -Sum | Select -ExpandProperty Sum")
+        
+        # Check if we got a number
+        if [[ "$counters" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            # Convert Bytes/sec to KB/s
+            local kb_sec=$(calc "$counters / 1024")
+            echo "$kb_sec"
+        else
+            echo "0"
+        fi
+        
+    elif [[ "$OS_TYPE" == "Linux" ]]; then
         # Linux: Read /proc/net/dev
         # Get sum of bytes for all non-loopback interfaces
-        local curr_bytes=$(awk '/:/ {if ($1 !~ /lo/) sum+=$2+$10} END {print sum}' /proc/net/dev)
+        local curr_bytes=$(awk '/:/ {if ($1 !~ /lo/) sum+=$2+$10} END {print sum+0}' /proc/net/dev)
+        curr_bytes=${curr_bytes:-0}
         
         if [ -f /tmp/net_prev ]; then
             local prev_bytes=$(cat /tmp/net_prev)
@@ -314,6 +421,34 @@ get_network_details() {
     local wifi_type="Unknown"
     local wifi_model="Unknown"
     
+    if [[ "$OS_TYPE" == "WSL" ]]; then
+        # WSL: Use PowerShell to get host adapter info
+        # Return comma-separated: LanSpeed,WifiSpeed,WifiType,WifiModel
+        # Note: Parsing complex objects via string passing is tricky, so we do minimal logic here
+        local info=$(run_powershell "
+            # Try to get active physical adapters first
+            \$lan = Get-NetAdapter | Where { \$_.Status -eq 'Up' -and \$_.MediaType -notlike '*802.11*' -and \$_.Virtual -eq \$false } | Select -First 1;
+            # If no physical LAN, try vEthernet (Hyper-V bridge) which often handles host traffic
+            if (-not \$lan) { \$lan = Get-NetAdapter | Where { \$_.Status -eq 'Up' -and \$_.Name -like '*vEthernet*' -and \$_.LinkSpeed -ne '0 bps' } | Select -First 1; }
+            
+            \$wifi = Get-NetAdapter | Where { \$_.Status -eq 'Up' -and \$_.MediaType -like '*802.11*' } | Select -First 1;
+            \$lSpeed = if (\$lan) { \$lan.LinkSpeed } else { 'Not Connected' };
+            \$wSpeed = if (\$wifi) { \$wifi.LinkSpeed } else { 'Not Connected' };
+            \$wModel = if (\$wifi) { \$wifi.InterfaceDescription } else { 'Unknown' };
+            \$wType = if (\$wifi) { 
+                if (\$wifi.Name -match 'Wi-Fi 6') { 'Wi-Fi 6' } 
+                elseif (\$wifi.Name -match 'Wi-Fi 5') { 'Wi-Fi 5' } 
+                else { \$wifi.MediaType }
+            } else { 'Unknown' };
+            Write-Host \"\$lSpeed|\$wSpeed|\$wType|\$wModel\"
+        ")
+        
+        if [ -n "$info" ]; then
+             echo "$info"
+             return
+        fi
+    fi
+
     if [[ "$OS_TYPE" == "Linux" ]]; then
         # Find default interface
         local default_iface=$(ip route get 1 2>/dev/null | awk '{print $5; exit}')
@@ -369,6 +504,52 @@ get_gpu_info() {
     local memory_total=0
     local temperature=0
     local status="Not Available"
+    
+    if [[ "$OS_TYPE" == "WSL" ]]; then
+        # WSL: Use PowerShell to get GPU info
+        # We try to get the first discrete GPU or just the first adapter
+        local gpu_info=$(run_powershell "
+            \$gpu = Get-CimInstance Win32_VideoController | Select-Object -First 1
+            \$name = \$gpu.Name
+            \$vram = [math]::Round(\$gpu.AdapterRAM / 1GB, 2)
+            Write-Host \"\$name|\$vram\"
+        ")
+        
+        if [ -n "$gpu_info" ]; then
+            model=$(echo "$gpu_info" | cut -d'|' -f1)
+            memory_total=$(echo "$gpu_info" | cut -d'|' -f2)
+            
+            # Vendor detection
+            if echo "$model" | grep -qi "nvidia"; then vendor="NVIDIA"; fi
+            if echo "$model" | grep -qi "amd\|radeon"; then vendor="AMD"; fi
+            if echo "$model" | grep -qi "intel"; then vendor="Intel"; fi
+            
+            # GPU Usage is tricky in WSL without nvidia-smi. 
+            # Try to get Temp via nvidia-smi.exe if standard nvidia-smi failed or is missing
+            local exe_found=$(run_powershell "Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source")
+            
+            if [ -n "$exe_found" ]; then
+                 # Call Windows nvidia-smi.exe for Temp and Usage
+                 local nout=$(run_powershell "nvidia-smi.exe --query-gpu=utilization.gpu,temperature.gpu --format=csv,noheader,nounits")
+                 if [ -n "$nout" ]; then
+                     usage=$(echo "$nout" | cut -d',' -f1 | xargs)
+                     temperature=$(echo "$nout" | cut -d',' -f2 | xargs)
+                 fi
+                 status="Active (WSL Host)"
+            else
+                 status="Active (WSL Host)"
+            fi
+
+             if command -v nvidia-smi &> /dev/null; then
+                 # Fall through to standard nvidia-smi check
+                 : 
+             else
+                 status="Active (WSL Host)"
+                 echo "$vendor|$model|$usage|$memory_used|$memory_total|$temperature|$status"
+                 return
+             fi
+        fi
+    fi
     
     # Try NVIDIA first
     if command -v nvidia-smi &> /dev/null; then
@@ -559,19 +740,19 @@ get_alerts() {
     local count=0
     
     # CPU Alerts
-    if [ $(echo "$cpu > 90" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+    if [ $(awk "BEGIN {print ($cpu > 90)}" 2>/dev/null || echo 0) -eq 1 ]; then
         if [ $count -gt 0 ]; then alerts="${alerts},"; fi
         alerts="${alerts}\"CRITICAL: High CPU Usage (${cpu}%)\""
         ((count++))
     fi
-    if [ $(echo "$cpu_temp > 80" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+    if [ $(awk "BEGIN {print ($cpu_temp > 80)}" 2>/dev/null || echo 0) -eq 1 ]; then
         if [ $count -gt 0 ]; then alerts="${alerts},"; fi
         alerts="${alerts}\"CRITICAL: High CPU Temperature (${cpu_temp} C)\""
         ((count++))
     fi
     
     # RAM Alerts
-    if [ $(echo "$ram_percent > 90" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+    if [ $(awk "BEGIN {print ($ram_percent > 90)}" 2>/dev/null || echo 0) -eq 1 ]; then
         if [ $count -gt 0 ]; then alerts="${alerts},"; fi
         alerts="${alerts}\"CRITICAL: High RAM Usage (${ram_percent}%)\""
         ((count++))
@@ -581,7 +762,7 @@ get_alerts() {
     IFS=';' read -ra ADDR <<< "$disk_str"
     for i in "${!ADDR[@]}"; do
         IFS=',' read -r name used total percent type <<< "${ADDR[$i]}"
-        if [ $(echo "$percent > 90" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+        if [ $(awk "BEGIN {print ($percent > 90)}" 2>/dev/null || echo 0) -eq 1 ]; then
             if [ $count -gt 0 ]; then alerts="${alerts},"; fi
             alerts="${alerts}\"CRITICAL: Low Disk Space on ${name} (${percent}% Used)\""
             ((count++))
@@ -595,12 +776,12 @@ get_alerts() {
     fi
     
     # GPU Alerts
-    if [ $(echo "$gpu_usage > 90" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+    if [ $(awk "BEGIN {print ($gpu_usage > 90)}" 2>/dev/null || echo 0) -eq 1 ]; then
         if [ $count -gt 0 ]; then alerts="${alerts},"; fi
         alerts="${alerts}\"CRITICAL: High GPU Usage (${gpu_usage}%)\""
         ((count++))
     fi
-    if [ $(echo "$gpu_temp > 85" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+    if [ $(awk "BEGIN {print ($gpu_temp > 85)}" 2>/dev/null || echo 0) -eq 1 ]; then
         if [ $count -gt 0 ]; then alerts="${alerts},"; fi
         alerts="${alerts}\"CRITICAL: High GPU Temperature (${gpu_temp} C)\""
         ((count++))
@@ -799,7 +980,7 @@ while true; do
         done
     fi
     
-    echo "[$timestamp] CPU: $cpu_model | ${cpu}% (${cpu_temp}C) | RAM: ${ram_used}GB/${ram_total}GB | Disk: $disk_console[$smart_status] | Net: ${net_kb}KB/s | LAN: $lan_speed | WiFi: $wifi_speed | GPU: $gpu_vendor $gpu_model" >&2
+    echo "[$timestamp] CPU: $cpu_model | ${cpu}% (${cpu_temp}C) | RAM: ${ram_used}GB/${ram_total}GB | Disk: $disk_console[$smart_status] | Net: ${net_kb}KB/s | LAN: $lan_speed | WiFi: $wifi_speed | GPU: $gpu_vendor $gpu_model ${gpu_usage}% (${gpu_temp}C)" >&2
     
     sleep "$INTERVAL"
 done
